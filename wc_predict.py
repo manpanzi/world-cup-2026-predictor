@@ -310,6 +310,29 @@ def flag(team_name):
     return FLAGS.get(team_name, "")
 
 
+CN_NAMES = {
+    "Mexico": "墨西哥", "South Africa": "南非", "South Korea": "韩国",
+    "Czech Republic": "捷克", "Canada": "加拿大", "Bosnia & Herzegovina": "波黑",
+    "Qatar": "卡塔尔", "Switzerland": "瑞士", "Brazil": "巴西", "Morocco": "摩洛哥",
+    "Haiti": "海地", "Scotland": "苏格兰", "USA": "美国", "United States": "美国",
+    "Turkey": "土耳其", "Australia": "澳大利亚", "Paraguay": "巴拉圭",
+    "Germany": "德国", "Ecuador": "厄瓜多尔", "Ivory Coast": "科特迪瓦",
+    "Curacao": "库拉索", "Curaçao": "库拉索", "Netherlands": "荷兰", "Japan": "日本",
+    "Sweden": "瑞典", "Tunisia": "突尼斯", "Belgium": "比利时", "Iran": "伊朗",
+    "Egypt": "埃及", "New Zealand": "新西兰", "Spain": "西班牙",
+    "Uruguay": "乌拉圭", "Cape Verde": "佛得角", "Saudi Arabia": "沙特阿拉伯",
+    "France": "法国", "Norway": "挪威", "Senegal": "塞内加尔", "Iraq": "伊拉克",
+    "Argentina": "阿根廷", "Austria": "奥地利", "Jordan": "约旦", "Algeria": "阿尔及利亚",
+    "Portugal": "葡萄牙", "Colombia": "哥伦比亚", "Uzbekistan": "乌兹别克斯坦",
+    "DR Congo": "刚果(金)", "England": "英格兰", "Croatia": "克罗地亚",
+    "Panama": "巴拿马", "Ghana": "加纳",
+}
+
+
+def cn(team_name):
+    return CN_NAMES.get(team_name, team_name)
+
+
 def format_wechat(results, match_date_str):
     """Build WeChat Work markdown message."""
     lines = [
@@ -322,6 +345,7 @@ def format_wechat(results, match_date_str):
 
     for r in analyzed:
         t1, t2 = r["team1"], r["team2"]
+        c1, c2 = cn(t1), cn(t2)
         group = r.get("group", "")
         time_str = r.get("time", "")
 
@@ -331,35 +355,35 @@ def format_wechat(results, match_date_str):
 
         # Favorite indicator
         if r["favorite"] == t1:
-            fav_line = f"{flag(t1)} **{t1}** (热门)"
+            fav_line = f"{flag(t1)} **{c1}** (热门)"
         elif r["favorite"] == t2:
-            fav_line = f"{flag(t2)} **{t2}** (热门)"
+            fav_line = f"{flag(t2)} **{c2}** (热门)"
         else:
             fav_line = "势均力敌"
 
         # Build match header
         lines.append(
-            f"## {flag(t1)} {t1} vs {flag(t2)} {t2}"
+            f"## {flag(t1)} {c1} vs {flag(t2)} {c2}"
         )
         lines.append(f"> {group} | {time_str} | {r.get('ground', '')}")
         lines.append("")
 
         # Win/Draw/Loss
         lines.append(
-            f"- 📊 **胜负**: {t1}胜 {w1:.0f}% / 平 {d:.0f}% / {t2}胜 {w2:.0f}%"
+            f"- 📊 **胜负**: {c1}胜 {w1:.0f}% / 平 {d:.0f}% / {c2}胜 {w2:.0f}%"
         )
 
         # Handicap
         bh = r["best_handicap"]
         if bh["push"] > 0.01:
             lines.append(
-                f"- 🎯 **让球** ({t1}{bh['line']:+.1f}): "
+                f"- 🎯 **让球** ({c1}{bh['line']:+.1f}): "
                 f"赢盘 {bh['cover']*100:.0f}% / 走水 {bh['push']*100:.0f}% "
                 f"/ 输盘 {bh['not_cover']*100:.0f}%"
             )
         else:
             lines.append(
-                f"- 🎯 **让球** ({t1}{bh['line']:+.1f}): "
+                f"- 🎯 **让球** ({c1}{bh['line']:+.1f}): "
                 f"赢盘 {bh['cover']*100:.0f}% / 输盘 {bh['not_cover']*100:.0f}%"
             )
 
@@ -374,10 +398,10 @@ def format_wechat(results, match_date_str):
         fd2 = form_to_display(r["form2"])
         fs1 = form_summary(r["form1"])
         fs2 = form_summary(r["form2"])
-        lines.append(f"- 💡 **状态**: {t1} {fs1}({fd1}) | {t2} {fs2}({fd2})")
+        lines.append(f"- 💡 **状态**: {c1} {fs1}({fd1}) | {c2} {fs2}({fd2})")
 
         # ELO comparison
-        lines.append(f"- 📈 **ELO**: {t1} {r['elo1']} vs {t2} {r['elo2']} (差{r['elo1']-r['elo2']:+d})")
+        lines.append(f"- 📈 **ELO**: {c1} {r['elo1']} vs {c2} {r['elo2']} (差{r['elo1']-r['elo2']:+d})")
 
         lines.append("")
 
@@ -480,7 +504,8 @@ def main():
     results = []
     for m in target_matches:
         t1, t2 = m["team1"], m["team2"]
-        print(f"\n[分析] {t1} vs {t2}")
+        c1, c2 = cn(t1), cn(t2)
+        print(f"\n[分析] {c1} vs {c2}")
         result = analyze_match(m, elo_data, form_data)
         results.append(result)
         if result.get("skip"):
