@@ -30,7 +30,7 @@ FORM_FILE = os.path.join(DATA_DIR, "recent_form.json")
 
 WEBHOOK_URL = os.getenv(
     "WECHAT_WEBHOOK_URL",
-    "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=fb9a9a68-c78f-439a-ae07-0a3e1e24e7e8",
+    "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=bce95ffc-b9c3-482f-bd15-1c764f4c7892",
 )
 
 CST = timezone(timedelta(hours=8))
