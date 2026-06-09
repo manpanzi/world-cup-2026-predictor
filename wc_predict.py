@@ -929,8 +929,15 @@ def send_wechat_images(images, results, match_date_str):
     except Exception:
         pass
 
-    # Send parlay as image (dark green background)
-    parlay = generate_parlay(results, match_date_str)
+    # Parlay: first 4 matches within 24h window
+    analyzed = [r for r in results if not r.get("skip")]
+    if analyzed:
+        first_time = analyzed[0].get("time", "")
+        parlay_results = analyzed[:4]  # max 4 matches
+    else:
+        parlay_results = []
+
+    parlay = generate_parlay(parlay_results, match_date_str)
     if parlay:
         p_b64, p_md5 = render_parlay_image(parlay, match_date_str,
                                             _find_chinese_font())

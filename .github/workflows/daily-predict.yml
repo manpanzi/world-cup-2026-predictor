@@ -2,7 +2,7 @@ name: "World Cup Daily Prediction"
 
 on:
   schedule:
-    - cron: "0 20 * * *"
+    - cron: "0 12 * * *"  # 12:00 UTC = 20:00 CST (night before match day)
   workflow_dispatch:
 
 jobs:
