@@ -476,12 +476,21 @@ def cn_venue(venue_en):
 
 def _find_chinese_font():
     """Find a Chinese-capable font on the system."""
+    # Search by font properties (CJK coverage)
     for f in font_manager.fontManager.ttflist:
-        for keyword in ("SimHei", "WenQuanYi", "Noto Sans CJK", "NotoSansCJK",
-                         "Droid Sans Fallback", "PingFang", "Microsoft YaHei",
-                         "DejaVu Sans", "Arial Unicode"):
-            if keyword.lower() in f.name.lower():
-                return f.name
+        try:
+            for keyword in ("Microsoft YaHei", "SimHei", "WenQuanYi",
+                             "Noto Sans CJK", "NotoSansCJK", "Droid Sans Fallback",
+                             "PingFang", "Arial Unicode", "WenQuanYi Zen Hei"):
+                if keyword.lower() in f.name.lower():
+                    return f.name
+        except Exception:
+            continue
+    # Fallback: try to rebuild font list scanning system dirs
+    for f in font_manager.fontManager.ttflist:
+        fname_lower = f.fname.lower()
+        if any(k in fname_lower for k in ("msyh", "simhei", "wqy", "noto", "cjki", "droid")):
+            return f.name
     return font_manager.fontManager.ttflist[0].name
 
 
@@ -566,13 +575,13 @@ def _render_single_image(date_str, f1, c1, f2, c2, group, time_disp, venue, rows
     x_margin = 0.04
 
     # Title
-    ax.text(x_margin, y, f"⚽ 世界杯预测 | {date_str}比赛日",
+    ax.text(x_margin, y, f"World Cup 世界杯预测 | {date_str}比赛日",
             fontsize=13, fontweight="bold", color="#e94560",
             fontfamily=font_name, transform=ax.transAxes, va="top")
     y -= 0.08
 
     # Match line
-    ax.text(x_margin, y, f"{f1} {c1} vs {f2} {c2}",
+    ax.text(x_margin, y, f"{c1} vs {c2}",
             fontsize=12, fontweight="bold", color="#ffffff",
             fontfamily=font_name, transform=ax.transAxes, va="top")
     y -= 0.06
