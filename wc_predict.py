@@ -4,6 +4,9 @@ World Cup 2026 Match Prediction & WeChat Work Alert System.
 ELO ratings + recent form + live betting odds → match analysis.
 """
 
+import base64
+import hashlib
+import io
 import json
 import math
 import os
@@ -12,6 +15,11 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 import requests
+from matplotlib import font_manager
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 
 # Fix Windows console encoding for emoji output
 if sys.platform == "win32":
@@ -464,8 +472,156 @@ def cn_venue(venue_en):
     return venue_en
 
 
+# ---------- image rendering ----------
+
+def _find_chinese_font():
+    """Find a Chinese-capable font on the system."""
+    for f in font_manager.fontManager.ttflist:
+        for keyword in ("SimHei", "WenQuanYi", "Noto Sans CJK", "NotoSansCJK",
+                         "Droid Sans Fallback", "PingFang", "Microsoft YaHei",
+                         "DejaVu Sans", "Arial Unicode"):
+            if keyword.lower() in f.name.lower():
+                return f.name
+    return font_manager.fontManager.ttflist[0].name
+
+
+def render_prediction_image(results, match_date_str):
+    """
+    Render match predictions as a clean table image, one per match.
+    Returns a list of (team_label, image_base64, image_md5) tuples.
+    """
+    font_name = _find_chinese_font()
+    analyzed = [r for r in results if not r.get("skip")]
+
+    images = []
+    for r in analyzed:
+        t1, t2 = r["team1"], r["team2"]
+        c1, c2 = cn(t1), cn(t2)
+        group = cn_group(r.get("group", ""))
+        venue = cn_venue(r.get("ground", ""))
+        bj_time, next_day = to_beijing_time(r.get("time", ""))
+        time_display = f"{bj_time} 北京时间"
+        if next_day:
+            time_display += "(次日)"
+
+        w1 = r["win1"] * 100
+        d = r["draw"] * 100
+        w2 = r["win2"] * 100
+        bh = r["best_handicap"]
+
+        odds = r.get("odds")
+        eu = odds.get("european", {}) if odds else {}
+
+        fd1 = form_to_display(r["form1"])
+        fd2 = form_to_display(r["form2"])
+        fs1 = form_summary(r["form1"])
+        fs2 = form_summary(r["form2"])
+
+        # Build table data
+        rows_data = [
+            # (section, rows...)
+            ("📊 数据", [
+                f"欧盘: 胜{eu.get('home','-')} / 平{eu.get('draw','-')} / 负{eu.get('away','-')}",
+                f"状态: {c1} {fs1}({fd1})",
+                f"      {c2} {fs2}({fd2})",
+                f"ELO:  {c1} {r['elo1']} vs {c2} {r['elo2']} (差{r['elo1']-r['elo2']:+d})",
+            ]),
+            ("🔮 预测", [
+                f"{c1}胜 {w1:.0f}%   平 {d:.0f}%   {c2}胜 {w2:.0f}%",
+                _hcap_text(c1, bh),
+                _score_text(r["scores"]),
+            ]),
+        ]
+
+        # Render
+        label = f"{flag(t1)}{c1}vs{flag(t2)}{c2}"
+        img_b64, img_md5 = _render_single_image(
+            match_date_str, flag(t1), c1, flag(t2), c2,
+            group, time_display, venue, rows_data, font_name
+        )
+        images.append((label, img_b64, img_md5))
+
+    return images
+
+
+def _hcap_text(c1, bh):
+    hcap_line = f"{c1}{bh['line']:+.1f}"
+    if bh["push"] > 0.01:
+        return f"让球 {hcap_line}: 赢盘 {bh['cover']*100:.0f}% / 走水 {bh['push']*100:.0f}% / 输盘 {bh['not_cover']*100:.0f}%"
+    return f"让球 {hcap_line}: 赢盘 {bh['cover']*100:.0f}% / 输盘 {bh['not_cover']*100:.0f}%"
+
+
+def _score_text(scores):
+    parts = [f"{g[0]}-{g[1]} ({g[2]*100:.1f}%)" for g in scores]
+    return "比分: " + " / ".join(parts)
+
+
+def _render_single_image(date_str, f1, c1, f2, c2, group, time_disp, venue, rows_data, font_name):
+    """Render one match as a PNG image and return (base64, md5)."""
+    fig, ax = plt.subplots(figsize=(8, 4.2))
+    ax.axis("off")
+    fig.patch.set_facecolor("#1a1a2e")
+
+    y = 1.0
+    x_margin = 0.04
+
+    # Title
+    ax.text(x_margin, y, f"⚽ 世界杯预测 | {date_str}比赛日",
+            fontsize=13, fontweight="bold", color="#e94560",
+            fontfamily=font_name, transform=ax.transAxes, va="top")
+    y -= 0.08
+
+    # Match line
+    ax.text(x_margin, y, f"{f1} {c1} vs {f2} {c2}",
+            fontsize=12, fontweight="bold", color="#ffffff",
+            fontfamily=font_name, transform=ax.transAxes, va="top")
+    y -= 0.06
+    ax.text(x_margin, y, f"{group} | {time_disp} | {venue}",
+            fontsize=8, color="#aaaaaa",
+            fontfamily=font_name, transform=ax.transAxes, va="top")
+    y -= 0.10
+
+    # Sections
+    for section_title, rows in rows_data:
+        # Section header
+        ax.text(x_margin, y, section_title,
+                fontsize=10, fontweight="bold", color="#f0c040",
+                fontfamily=font_name, transform=ax.transAxes, va="top")
+        y -= 0.01
+        # Separator line
+        ax.plot([x_margin, 0.96], [y + 0.005, y + 0.005],
+                color="#333366", linewidth=0.5, transform=ax.transAxes, clip_on=False)
+        y -= 0.06
+
+        for row in rows:
+            ax.text(x_margin + 0.02, y, row,
+                    fontsize=8.5, color="#d0d0e0",
+                    fontfamily=font_name, transform=ax.transAxes, va="top")
+            y -= 0.055
+        y -= 0.02
+
+    # Footer
+    ax.text(x_margin, 0.02, "ELO + Poisson + 近期状态  |  ELO隐含赔率  |  仅供参考",
+            fontsize=6.5, color="#666688", fontfamily=font_name,
+            transform=ax.transAxes, va="bottom")
+
+    # Save to bytes
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=120, bbox_inches="tight",
+                facecolor="#1a1a2e", edgecolor="none")
+    plt.close(fig)
+    buf.seek(0)
+    img_bytes = buf.getvalue()
+
+    img_b64 = base64.b64encode(img_bytes).decode("ascii")
+    img_md5 = hashlib.md5(img_bytes).hexdigest()
+    return img_b64, img_md5
+
+
+# ---------- format_wechat (fallback markdown) ----------
+
+
 def format_wechat(results, match_date_str):
-    """Build WeChat Work markdown message."""
     lines = [
         f"# ⚽ 世界杯预测 | {match_date_str}比赛日",
         "",
@@ -575,20 +731,61 @@ def format_wechat(results, match_date_str):
 # ---------- WeChat send ----------
 
 
-def send_wechat(content):
-    """Push markdown to WeChat Work bot, auto-split on 4096 byte limit."""
+def send_wechat_images(images, match_date_str):
+    """Push prediction images to WeChat Work bot, one per match."""
+    print(f"\n📤 推送 {len(images)} 张预测图到企业微信...")
+
+    # Header message
+    header = {
+        "msgtype": "markdown",
+        "markdown": {"content": f"# ⚽ 世界杯预测 | {match_date_str}比赛日\n共{len(images)}场比赛 👇"},
+    }
+    try:
+        r = requests.post(WEBHOOK_URL, json=header, timeout=15)
+        print(f"  [header] {r.json()}")
+    except Exception as e:
+        print(f"  [WARN] header: {e}")
+
+    for label, img_b64, img_md5 in images:
+        payload = {
+            "msgtype": "image",
+            "image": {"base64": img_b64, "md5": img_md5},
+        }
+        try:
+            r = requests.post(WEBHOOK_URL, json=payload, timeout=20)
+            result = r.json()
+            if result.get("errcode") == 0:
+                print(f"  [OK] {label}")
+            else:
+                print(f"  [WARN] {label}: {result}")
+        except Exception as e:
+            print(f"  [ERROR] {label}: {e}")
+
+    # Footer
+    footer = {
+        "msgtype": "markdown",
+        "markdown": {"content": "> ⚠ ELO + Poisson + 近期状态 | ELO隐含赔率 | 仅供参考"},
+    }
+    try:
+        requests.post(WEBHOOK_URL, json=footer, timeout=15)
+    except Exception:
+        pass
+
+
+def send_wechat_markdown(content):
+    """Push markdown to WeChat (fallback), auto-split on 4096 byte limit."""
     max_bytes = 3900
     if len(content.encode("utf-8")) <= max_bytes:
-        return _do_send(content)
+        return _do_send_md(content)
 
     sections = content.split("\n## ")
     for i, sec in enumerate(sections):
         chunk = sec if i == 0 else "## " + sec
         tag = f" ({i + 1}/{len(sections)})" if len(sections) > 1 else ""
-        _do_send(chunk + tag)
+        _do_send_md(chunk + tag)
 
 
-def _do_send(content):
+def _do_send_md(content):
     payload = {"msgtype": "markdown", "markdown": {"content": content}}
     try:
         r = requests.post(WEBHOOK_URL, json=payload, timeout=15)
@@ -669,22 +866,16 @@ def main():
             if result.get("odds"):
                 print(f"  赔率: {odds_summary(result['odds'], result['elo1'], result['elo2'])}")
 
-    msg = format_wechat(results, target_str)
-    print(f"\n{'=' * 56}")
-    print(msg)
-    print(f"{'=' * 56}")
+    # Render images
+    images = render_prediction_image(results, target_str)
+    print(f"\n[图片] 生成 {len(images)} 张预测图")
 
     if args.dry_run:
         print("\n🔇 dry-run模式，跳过推送")
         return
 
-    print("\n📤 发送到企业微信...")
-    ok = send_wechat(msg)
-    if ok:
-        print("✅ 推送完成")
-    else:
-        print("❌ 推送失败")
-        sys.exit(1)
+    send_wechat_images(images, target_str)
+    print("✅ 推送完成")
 
 
 if __name__ == "__main__":
