@@ -699,6 +699,83 @@ def _render_single_image(date_str, c1, c2, group, time_disp, venue, rows_data, f
     return img_b64, img_md5
 
 
+# ---------- parlay image ----------
+
+
+def render_parlay_image(parlay_text, match_date_str, font_name):
+    """Render the parlay text as a styled image with dark green background."""
+    if not parlay_text:
+        return None, None
+
+    fig, ax = plt.subplots(figsize=(6, 8))
+    ax.axis("off")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    fig.patch.set_facecolor("#0f2b24")  # dark teal/green
+
+    y = 0.96
+    # Title
+    ax.text(0.5, y, f"World Cup 2026 串关精选",
+            fontsize=18, fontweight="bold", color="#70e0a0",
+            fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
+    y -= 0.05
+    ax.text(0.5, y, f"{match_date_str} 比赛日",
+            fontsize=14, color="#50c878",
+            fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
+    y -= 0.08
+
+    # Parse parlay text to extract combos
+    # Format: "### 🥇 3串1 (胜率 `23%` / 总赔率 `2.43`)\n> **A** × **B**\n明细: ..."
+    sections = parlay_text.split("### ")
+    tags = ["🥇", "🥈", "🥉"]
+
+    for i, section in enumerate(sections):
+        if not section.strip() or "串关精选" in section:
+            continue
+        lines_in = section.strip().split("\n")
+
+        # Header line: "🥇 3串1 (胜率 23% / 总赔率 2.43)"
+        header = lines_in[0].strip()
+        # Clean markdown formatting
+        header = header.replace("`", "")
+        ax.text(0.08, y, header,
+                fontsize=14, fontweight="bold", color="#f0e060",
+                fontfamily=font_name, transform=ax.transAxes, va="top")
+        y -= 0.065
+
+        # Combo line: "> **pick1** × **pick2** × **pick3**"
+        if len(lines_in) > 1:
+            combo = lines_in[1].replace("> ", "").replace("**", "").strip()
+            ax.text(0.5, y, combo,
+                    fontsize=12, color="#ffffff",
+                    fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
+            y -= 0.055
+
+        # Detail line: "明细: A [胜负] 68% @1.5 | B [让球] 65% @1.5"
+        if len(lines_in) > 2:
+            detail = lines_in[2].replace("明细: ", "").replace("`", "").strip()
+            parts = detail.split(" | ")
+            for part in parts:
+                ax.text(0.12, y, part.strip(),
+                        fontsize=9.5, color="#b0d0c0",
+                        fontfamily=font_name, transform=ax.transAxes, va="top")
+                y -= 0.04
+        y -= 0.03
+
+    # Footer disclaimer
+    ax.text(0.5, 0.04, "算法生成 · 竞彩参考 · 理性投注",
+            fontsize=9, color="#507060", fontfamily=font_name,
+            transform=ax.transAxes, va="center", ha="center")
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
+                facecolor="#0f2b24", edgecolor="none")
+    plt.close(fig)
+    buf.seek(0)
+    img_bytes = buf.getvalue()
+    return base64.b64encode(img_bytes).decode("ascii"), hashlib.md5(img_bytes).hexdigest()
+
+
 # ---------- format_wechat (fallback markdown) ----------
 
 
@@ -842,25 +919,28 @@ def send_wechat_images(images, results, match_date_str):
         except Exception as e:
             print(f"  [ERROR] {label}: {e}")
 
-    # Footer
+    # Footer text
     footer = {
         "msgtype": "markdown",
-        "markdown": {"content": "> ⚠ ELO + Poisson + 近期状态 | ELO隐含赔率 | 仅供参考"},
+        "markdown": {"content": "> ⚠ 数据来源 ELO + Poisson | 竞彩赔率为模拟值 | 仅供参考"},
     }
     try:
         requests.post(WEBHOOK_URL, json=footer, timeout=15)
     except Exception:
         pass
 
-    # Send parlay suggestion as text
+    # Send parlay as image (dark green background)
     parlay = generate_parlay(results, match_date_str)
     if parlay:
-        payload = {"msgtype": "markdown", "markdown": {"content": parlay}}
-        try:
-            r = requests.post(WEBHOOK_URL, json=payload, timeout=15)
-            print(f"  [parlay] {r.json()}")
-        except Exception as e:
-            print(f"  [WARN] parlay: {e}")
+        p_b64, p_md5 = render_parlay_image(parlay, match_date_str,
+                                            _find_chinese_font())
+        if p_b64:
+            payload = {"msgtype": "image", "image": {"base64": p_b64, "md5": p_md5}}
+            try:
+                r = requests.post(WEBHOOK_URL, json=payload, timeout=20)
+                print(f"  [parlay] {r.json()}")
+            except Exception as e:
+                print(f"  [WARN] parlay image: {e}")
 
 
 def generate_parlay(results, match_date_str):
