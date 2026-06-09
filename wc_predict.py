@@ -525,31 +525,32 @@ def format_wechat(results, match_date_str):
 
         lines.append("")
 
-        # === PREDICTION TABLE ===
+        # === PREDICTION SECTION ===
         lines.append("**🔮 预测**")
-        lines.append("")
-        lines.append("| 项目 | 选项 | 概率 |")
-        lines.append("|------|------|------|")
 
         # Win/Draw/Loss
-        lines.append(f"| 胜负 | {c1}胜 | {w1:.0f}% |")
-        lines.append(f"|  | 平 | {d:.0f}% |")
-        lines.append(f"|  | {c2}胜 | {w2:.0f}% |")
+        lines.append(f"> 胜负: {c1}胜 `{w1:.0f}%` / 平 `{d:.0f}%` / {c2}胜 `{w2:.0f}%`")
 
         # Handicap
         bh = r["best_handicap"]
         hcap_line = f"{c1}{bh['line']:+.1f}"
         if bh["push"] > 0.01:
-            lines.append(f"| 让球 | {hcap_line} 赢盘 | {bh['cover']*100:.0f}% |")
-            lines.append(f"|  | {hcap_line} 走水 | {bh['push']*100:.0f}% |")
-            lines.append(f"|  | {hcap_line} 输盘 | {bh['not_cover']*100:.0f}% |")
+            lines.append(
+                f"> 让球: {hcap_line} 赢盘 `{bh['cover']*100:.0f}%` "
+                f"/ 走水 `{bh['push']*100:.0f}%` "
+                f"/ 输盘 `{bh['not_cover']*100:.0f}%`"
+            )
         else:
-            lines.append(f"| 让球 | {hcap_line} 赢盘 | {bh['cover']*100:.0f}% |")
-            lines.append(f"|  | {hcap_line} 输盘 | {bh['not_cover']*100:.0f}% |")
+            lines.append(
+                f"> 让球: {hcap_line} 赢盘 `{bh['cover']*100:.0f}%` "
+                f"/ 输盘 `{bh['not_cover']*100:.0f}%`"
+            )
 
         # Scores
+        score_strs = []
         for ga, gb, prob in r["scores"]:
-            lines.append(f"| 比分 | {ga}-{gb} | {prob*100:.1f}% |")
+            score_strs.append(f"`{ga}-{gb}` ({prob*100:.1f}%)")
+        lines.append(f"> 比分: {' / '.join(score_strs)}")
 
         lines.append("")
 
