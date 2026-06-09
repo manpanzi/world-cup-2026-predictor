@@ -727,7 +727,7 @@ def render_parlay_image(parlay_text, match_date_str, font_name):
     # Parse parlay text to extract combos
     # Format: "### 🥇 3串1 (胜率 `23%` / 总赔率 `2.43`)\n> **A** × **B**\n明细: ..."
     sections = parlay_text.split("### ")
-    tags = ["🥇", "🥈", "🥉"]
+    tags = ["[1st]", "[2nd]", "[3rd]"]
 
     for i, section in enumerate(sections):
         if not section.strip() or "串关精选" in section:
@@ -1017,7 +1017,7 @@ def generate_parlay(results, match_date_str):
     for i, (picks, prob, total_odds) in enumerate(top):
         size = len(picks)
         label = labels.get(size, f"{size}串1")
-        tags = ["🥇", "🥈", "🥉"]
+        tags = ["[1st]", "[2nd]", "[3rd]"]
         combo_str = " × ".join(f"**{p[0]}**" for p in picks)
         lines.append(
             f"### {tags[i]} {label} (胜率 `{prob*100:.0f}%` / 总赔率 `{total_odds}`)"
