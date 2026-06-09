@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 World Cup 2026 Match Prediction & WeChat Work Alert System.
-Uses ELO ratings + recent form to predict match outcomes,
-handicap results, and likely scorelines.
+ELO ratings + recent form + live betting odds → match analysis.
 """
 
 import json
 import math
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -33,6 +33,8 @@ WEBHOOK_URL = os.getenv(
     "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=bce95ffc-b9c3-482f-bd15-1c764f4c7892",
 )
 
+ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
+
 CST = timezone(timedelta(hours=8))
 
 # ---------- data loading ----------
@@ -49,154 +51,115 @@ def load_data():
 
 
 def resolve_elo(name, elo_data):
-    """Resolve team name to ELO rating, with name mapping."""
     name_map = elo_data.get("name_map", {})
     resolved = name_map.get(name, name)
     return elo_data["teams"].get(resolved)
 
 
 def resolve_form(name, elo_data, form_data):
-    """Resolve team name to form string."""
     name_map = elo_data.get("name_map", {})
     resolved = name_map.get(name, name)
     return form_data["forms"].get(resolved, "?-?-?-?-?")
 
+# ---------- Beijing time ----------
 
-# ---------- match filtering ----------
 
+def to_beijing_time(time_str):
+    """
+    Parse '13:00 UTC-6' → Beijing time string like '03:00 (次日)'.
+    Returns (display_time, is_next_day).
+    """
+    m = re.match(r"(\d{1,2}):(\d{2})\s*UTC([+-]\d+)", time_str)
+    if not m:
+        return time_str, False
 
-def get_tomorrow_matches_cst(all_matches):
-    """Return matches scheduled for tomorrow in CST (Asia/Shanghai)."""
-    now_cst = datetime.now(CST)
-    tomorrow = (now_cst + timedelta(days=1)).date()
+    hh, mm = int(m.group(1)), int(m.group(2))
+    utc_offset = int(m.group(3))
 
-    result = []
-    for m in all_matches:
-        try:
-            match_date = datetime.strptime(m["date"], "%Y-%m-%d").date()
-        except (ValueError, KeyError):
-            continue
-        if match_date == tomorrow:
-            result.append(m)
-    return result
+    # Convert to UTC first, then to CST (UTC+8)
+    utc_minutes = hh * 60 + mm - utc_offset * 60
+    bj_minutes = utc_minutes + 8 * 60
+
+    bj_minutes %= 24 * 60
+    bj_hh, bj_mm = divmod(bj_minutes, 60)
+    next_day = bj_hh < 6  # if Beijing time is before 6am, likely next day
+
+    return f"{bj_hh:02d}:{bj_mm:02d}", next_day
 
 
 # ---------- prediction engine ----------
 
 
 def elo_win_probability(elo_a, elo_b):
-    """Expected win probability for team A based on ELO difference."""
     return 1.0 / (1.0 + 10 ** ((elo_b - elo_a) / 400.0))
 
 
 def calc_match_probabilities(elo_a, elo_b):
-    """Return (win_A, draw, win_B) probabilities in [0,1]."""
     e_a = elo_win_probability(elo_a, elo_b)
     diff = abs(elo_a - elo_b)
-
-    # Draw probability peaks at ~26% for equal teams, decays with ELO gap
     draw = 0.26 * math.exp(-((diff / 250.0) ** 2))
-
     win_a = e_a * (1.0 - draw)
     win_b = (1.0 - e_a) * (1.0 - draw)
-
     return win_a, draw, win_b
 
 
 def calc_handicap(elo_a, elo_b, handicap):
-    """
-    Calculate handicap-adjusted win probability for team A.
-    handicap is the line, e.g. -1.0 means team A gives 1 goal.
-    Returns (cover_A, not_cover_A) where cover_A means A wins after handicap.
-    """
-    # Each goal ~ 80 ELO points
     elo_adj = handicap * 80
     p_cover = elo_win_probability(elo_a + elo_adj, elo_b)
-    # Adjust for push (handicap is integer, push chance reduces cover)
     if handicap == int(handicap) and handicap != 0:
-        # Estimate push probability
-        goal_diff_elo = abs(elo_a - elo_b)
-        push = 0.12 * math.exp(-((goal_diff_elo / 200.0) ** 2))
+        diff = abs(elo_a - elo_b)
+        push = 0.12 * math.exp(-((diff / 200.0) ** 2))
         p_cover = p_cover * (1.0 - push)
         return p_cover, 1.0 - p_cover - push, push
     return p_cover, 1.0 - p_cover, 0.0
 
 
 def poisson_pmf(lmbda, k):
-    """Poisson probability mass function."""
     if lmbda <= 0:
         return 1.0 if k == 0 else 0.0
     return math.exp(-lmbda) * (lmbda ** k) / math.factorial(k)
 
 
 def predict_scores(elo_a, elo_b):
-    """
-    Generate 2 most likely score predictions using Poisson model.
-    Returns list of (score_a, score_b, probability) tuples.
-    """
-    avg_goals = 1.5  # baseline expected goals
-
+    avg_goals = 1.5
     exp_g_a = avg_goals * math.exp((elo_a - elo_b) / 400.0 * 0.85)
     exp_g_b = avg_goals * math.exp((elo_b - elo_a) / 400.0 * 0.85)
-
-    # Cap at reasonable values
     exp_g_a = max(0.3, min(exp_g_a, 5.0))
     exp_g_b = max(0.3, min(exp_g_b, 5.0))
 
-    # Generate all score permutations 0-6
     scores = []
     for ga in range(0, 7):
         for gb in range(0, 7):
             prob = poisson_pmf(exp_g_a, ga) * poisson_pmf(exp_g_b, gb)
             scores.append((ga, gb, prob))
-
     scores.sort(key=lambda x: x[2], reverse=True)
 
-    # Return top 2 unique scores (skip 0-0 if it's #1, it's boring)
     result = []
     for s in scores:
         if len(result) >= 2:
             break
-        # skip redundant draws when there's a clear favorite
         if s[0] == s[1] and abs(elo_a - elo_b) > 200 and len(result) > 0:
             continue
         result.append(s)
-
     return result
 
 
 def form_score(form_str):
-    """
-    Convert form string 'W-D-W-L-W' to a numeric momentum score.
-    Returns value in [-5, 5] representing recent momentum.
-    """
     points = {"W": 3, "w": 3, "D": 1, "d": 1, "L": 0, "l": 0}
     results = form_str.strip().split("-")
     if len(results) != 5:
         return 0.0
-
-    # Weight: most recent game has highest weight
     weights = [0.35, 0.25, 0.20, 0.12, 0.08]
-    score = 0
-    for i, r in enumerate(results):
-        p = points.get(r.strip(), 1)
-        score += p * weights[i]
-
-    # Normalize: 3.0 max (all wins) → 5, 0.0 min (all losses) → -5
-    normalized = (score / 3.0) * 10 - 5
-    return round(normalized, 1)
+    score = sum(points.get(r.strip(), 1) * weights[i] for i, r in enumerate(results))
+    return round((score / 3.0) * 10 - 5, 1)
 
 
 def form_to_display(form_str):
-    """Convert W-D-L-W format to display-friendly string."""
-    mapping = {"W": "胜", "D": "平", "L": "负",
-               "w": "胜", "d": "平", "l": "负"}
-    results = form_str.strip().split("-")
-    return "".join(mapping.get(r.strip(), "?") for r in results)
+    mapping = {"W": "胜", "D": "平", "L": "负", "w": "胜", "d": "平", "l": "负"}
+    return "".join(mapping.get(r.strip(), "?") for r in form_str.strip().split("-"))
 
 
 def form_summary(form_str):
-    """Return '近5场X胜Y平Z负' string."""
     results = form_str.strip().split("-")
     w = sum(1 for r in results if r.strip().upper() == "W")
     d = sum(1 for r in results if r.strip().upper() == "D")
@@ -204,10 +167,135 @@ def form_summary(form_str):
     return f"近5场{w}胜{d}平{l_count}负"
 
 
+# ---------- live odds ----------
+
+
+def implied_odds_from_elo(elo1, elo2):
+    """Generate ELO-implied fair odds (decimal) when live API unavailable."""
+    w1, d, w2 = calc_match_probabilities(elo1, elo2)
+    return {
+        "source": "ELO隐含",
+        "european": {"home": round(1.0 / w1, 2), "draw": round(1.0 / d, 2), "away": round(1.0 / w2, 2)},
+        "asian": {"line": None, "home": None, "away": None},
+    }
+
+
+def fetch_live_odds(team1, team2, elo1, elo2):
+    """
+    Fetch live odds from the-odds-api.com.
+    Falls back to ELO-implied odds if API key not set or fetch fails.
+    Returns dict with 'european' and 'asian' odds.
+    """
+    if not ODDS_API_KEY:
+        return implied_odds_from_elo(elo1, elo2)
+
+    # Try both sport keys: soccer_world_cup_winner (outright) + search for match odds
+    sport_keys = ["soccer_world_cup", "soccer_fifa_world_cup"]
+
+    for sport in sport_keys:
+        try:
+            url = (
+                f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
+                f"?apiKey={ODDS_API_KEY}"
+                f"&regions=eu,us"
+                f"&markets=h2h,spreads"
+                f"&oddsFormat=decimal"
+            )
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                return _parse_odds_response(data, team1, team2, elo1, elo2)
+        except Exception as e:
+            print(f"  [WARN] Odds API ({sport}): {e}")
+            continue
+
+    return implied_odds_from_elo(elo1, elo2)
+
+
+def _parse_odds_response(data, team1, team2, elo1, elo2):
+    """Parse the-odds-api response, matching teams by name substring."""
+    t1_lower = team1.lower()
+    t2_lower = team2.lower()
+
+    for event in data:
+        home = event.get("home_team", "").lower()
+        away = event.get("away_team", "").lower()
+        if (t1_lower in home or home in t1_lower) or \
+           (t1_lower in away or away in t1_lower):
+            bookmakers = event.get("bookmakers", [])
+            if not bookmakers:
+                continue
+
+            # Average odds across bookmakers
+            h2h_odds = []
+            spread_odds = []
+            for bk in bookmakers:
+                for mkt in bk.get("markets", []):
+                    if mkt.get("key") == "h2h":
+                        for outcome in mkt.get("outcomes", []):
+                            h2h_odds.append(outcome)
+                    elif mkt.get("key") == "spreads":
+                        for outcome in mkt.get("outcomes", []):
+                            spread_odds.append(outcome)
+
+            if h2h_odds:
+                home_odds = [o["price"] for o in h2h_odds if o["name"] == event.get("home_team")]
+                away_odds = [o["price"] for o in h2h_odds if o["name"] == event.get("away_team")]
+                draw_odds = [o["price"] for o in h2h_odds if o["name"] == "Draw"]
+                return {
+                    "source": "live",
+                    "european": {
+                        "home": round(sum(home_odds) / len(home_odds), 2) if home_odds else None,
+                        "draw": round(sum(draw_odds) / len(draw_odds), 2) if draw_odds else None,
+                        "away": round(sum(away_odds) / len(away_odds), 2) if away_odds else None,
+                    },
+                    "asian": _parse_asian_spreads(spread_odds, event),
+                }
+
+    return implied_odds_from_elo(elo1, elo2)
+
+
+def _parse_asian_spreads(outcomes, event):
+    """Extract Asian handicap spread closest to 0.5 from bookmaker data."""
+    if not outcomes:
+        return {"line": None, "home": None, "away": None}
+
+    # Find spread closest to absolute value 0.5
+    best = None
+    for o in outcomes:
+        pt = o.get("point", 0)
+        if best is None or abs(abs(pt) - 0.5) < abs(abs(best["point"]) - 0.5):
+            best = o
+
+    if best:
+        return {
+            "line": best.get("point"),
+            "home": best.get("price") if best["name"] == event.get("home_team") else None,
+            "away": None,
+        }
+    return {"line": None, "home": None, "away": None}
+
+
+def odds_summary(odds, elo1, elo2):
+    """Build a one-line odds summary string."""
+    if odds is None:
+        odds = implied_odds_from_elo(elo1, elo2)
+
+    src = odds["source"]
+    eu = odds.get("european", {})
+    home = eu.get("home")
+    draw = eu.get("draw")
+    away = eu.get("away")
+
+    if home and draw and away:
+        return f"欧盘 {home}/{draw}/{away} ({src})"
+    return f"欧盘 暂无 ({src})"
+
+
 # ---------- analysis pipeline ----------
 
 
-def analyze_match(match, elo_data, form_data):
+def analyze_match(match, elo_data, form_data, fetch_odds=False):
     """Full analysis for a single match."""
     team1 = match["team1"]
     team2 = match["team2"]
@@ -220,7 +308,7 @@ def analyze_match(match, elo_data, form_data):
             "skip": True,
             "team1": team1,
             "team2": team2,
-            "reason": "TBD (knockout placeholder or unknown team)",
+            "reason": "TBD (knockout placeholder)",
         }
 
     form1_str = resolve_form(team1, elo_data, form_data)
@@ -229,28 +317,26 @@ def analyze_match(match, elo_data, form_data):
     # Win/draw/loss
     w1, d, w2 = calc_match_probabilities(elo1, elo2)
 
-    # Form momentum adjustment (±6% max)
+    # Form momentum adjustment
     fs1 = form_score(form1_str)
     fs2 = form_score(form2_str)
-    adj = (fs1 - fs2) * 0.012  # 6% max adjustment
+    adj = (fs1 - fs2) * 0.012
     w1 = max(0.02, min(0.98, w1 + adj))
     w2 = max(0.02, min(0.98, w2 - adj))
     d = 1.0 - w1 - w2
 
-    # Handicap suggestions
+    # Handicap
     handicap_lines = [-0.5, -1.0, -1.5, -2.0]
     hcaps = []
     for hcap in handicap_lines:
         cov, nc, push = calc_handicap(elo1, elo2, hcap)
         hcaps.append({"line": hcap, "cover": cov, "not_cover": nc, "push": push})
-
-    # Best handicap line (closest to 50/50)
     best_hcap = min(hcaps, key=lambda h: abs(h["cover"] - 0.5))
 
-    # Score predictions
+    # Scores
     scores = predict_scores(elo1, elo2)
 
-    # Determine favorite
+    # Favorite
     if w1 > w2 + 0.05:
         favorite = team1
         fav_pct = w1
@@ -260,28 +346,28 @@ def analyze_match(match, elo_data, form_data):
     else:
         favorite = None
 
+    # Live odds
+    odds = None
+    if fetch_odds:
+        odds = fetch_live_odds(team1, team2, elo1, elo2)
+
     return {
         "skip": False,
-        "team1": team1,
-        "team2": team2,
-        "elo1": elo1,
-        "elo2": elo2,
+        "team1": team1, "team2": team2,
+        "elo1": elo1, "elo2": elo2,
         "group": match.get("group", ""),
         "date": match.get("date", ""),
         "time": match.get("time", ""),
         "ground": match.get("ground", ""),
-        "win1": w1,
-        "draw": d,
-        "win2": w2,
+        "win1": w1, "draw": d, "win2": w2,
         "handicaps": hcaps,
         "best_handicap": best_hcap,
         "scores": scores,
-        "form1": form1_str,
-        "form2": form2_str,
-        "form1_score": fs1,
-        "form2_score": fs2,
+        "form1": form1_str, "form2": form2_str,
+        "form1_score": fs1, "form2_score": fs2,
         "favorite": favorite,
         "fav_pct": fav_pct if favorite else 0,
+        "odds": odds,
     }
 
 
@@ -305,11 +391,6 @@ FLAGS = {
     "Panama": "🇵🇦", "Ghana": "🇬🇭",
 }
 
-
-def flag(team_name):
-    return FLAGS.get(team_name, "")
-
-
 CN_NAMES = {
     "Mexico": "墨西哥", "South Africa": "南非", "South Korea": "韩国",
     "Czech Republic": "捷克", "Canada": "加拿大", "Bosnia & Herzegovina": "波黑",
@@ -328,9 +409,59 @@ CN_NAMES = {
     "Panama": "巴拿马", "Ghana": "加纳",
 }
 
+CN_GROUPS = {
+    "Group A": "A组", "Group B": "B组", "Group C": "C组", "Group D": "D组",
+    "Group E": "E组", "Group F": "F组", "Group G": "G组", "Group H": "H组",
+    "Group I": "I组", "Group J": "J组", "Group K": "K组", "Group L": "L组",
+}
+
+CN_VENUES = {
+    "Mexico City": "墨西哥城",
+    "Guadalajara (Zapopan)": "瓜达拉哈拉",
+    "Monterrey (Guadalupe)": "蒙特雷",
+    "Toronto": "多伦多",
+    "Vancouver": "温哥华",
+    "San Francisco Bay Area (Santa Clara)": "旧金山湾区",
+    "Los Angeles (Inglewood)": "洛杉矶",
+    "Seattle": "西雅图",
+    "New York/New Jersey (East Rutherford)": "纽约/新泽西",
+    "Boston (Foxborough)": "波士顿",
+    "Philadelphia": "费城",
+    "Atlanta": "亚特兰大",
+    "Miami (Miami Gardens)": "迈阿密",
+    "Houston": "休斯顿",
+    "Dallas (Arlington)": "达拉斯",
+    "Kansas City": "堪萨斯城",
+}
+
+ROUND_CN = {
+    "Matchday 1": "小组赛第1轮", "Matchday 2": "小组赛第2轮",
+    "Matchday 3": "小组赛第3轮", "Matchday 8": "小组赛第2轮",
+    "Matchday 14": "小组赛第3轮",
+    "Round of 32": "1/16决赛", "Round of 16": "1/8决赛",
+    "Quarter-finals": "1/4决赛", "Quarter-final": "1/4决赛",
+    "Semi-finals": "半决赛", "Semi-final": "半决赛",
+    "Match for third place": "三四名决赛", "Final": "决赛",
+}
+
+
+def flag(team_name):
+    return FLAGS.get(team_name, "")
+
 
 def cn(team_name):
     return CN_NAMES.get(team_name, team_name)
+
+
+def cn_group(group_en):
+    return CN_GROUPS.get(group_en, group_en)
+
+
+def cn_venue(venue_en):
+    for k, v in CN_VENUES.items():
+        if k in venue_en:
+            return v
+    return venue_en
 
 
 def format_wechat(results, match_date_str):
@@ -346,46 +477,66 @@ def format_wechat(results, match_date_str):
     for r in analyzed:
         t1, t2 = r["team1"], r["team2"]
         c1, c2 = cn(t1), cn(t2)
-        group = r.get("group", "")
-        time_str = r.get("time", "")
+        group = cn_group(r.get("group", ""))
+        venue = cn_venue(r.get("ground", ""))
+
+        # Beijing time
+        bj_time, next_day = to_beijing_time(r.get("time", ""))
+        time_display = f"{bj_time} 北京时间"
+        if next_day:
+            time_display += "(次日)"
 
         w1 = r["win1"] * 100
         d = r["draw"] * 100
         w2 = r["win2"] * 100
 
-        # Favorite indicator
-        if r["favorite"] == t1:
-            fav_line = f"{flag(t1)} **{c1}** (热门)"
-        elif r["favorite"] == t2:
-            fav_line = f"{flag(t2)} **{c2}** (热门)"
-        else:
-            fav_line = "势均力敌"
-
         # Build match header
-        lines.append(
-            f"## {flag(t1)} {c1} vs {flag(t2)} {c2}"
-        )
-        lines.append(f"> {group} | {time_str} | {r.get('ground', '')}")
+        lines.append(f"## {flag(t1)} {c1} vs {flag(t2)} {c2}")
+        lines.append(f"> {group} | {time_display} | {venue}")
         lines.append("")
 
-        # Win/Draw/Loss
-        lines.append(
-            f"- 📊 **胜负**: {c1}胜 {w1:.0f}% / 平 {d:.0f}% / {c2}胜 {w2:.0f}%"
-        )
+        # Win/Draw/Loss + European odds
+        odds = r.get("odds")
+        if odds:
+            eu = odds.get("european", {})
+            h_odd = eu.get("home")
+            d_odd = eu.get("draw")
+            a_odd = eu.get("away")
+            odd_src = odds.get("source", "ELO隐含")
+            if h_odd and d_odd and a_odd:
+                lines.append(
+                    f"- 📊 **胜负**: {c1}胜 {w1:.0f}% / 平 {d:.0f}% / {c2}胜 {w2:.0f}%")
+                lines.append(
+                    f"- 💰 **欧盘**: 胜{h_odd} / 平{d_odd} / 负{a_odd} ({odd_src})")
+            else:
+                lines.append(
+                    f"- 📊 **胜负**: {c1}胜 {w1:.0f}% / 平 {d:.0f}% / {c2}胜 {w2:.0f}%")
+        else:
+            lines.append(
+                f"- 📊 **胜负**: {c1}胜 {w1:.0f}% / 平 {d:.0f}% / {c2}胜 {w2:.0f}%")
 
-        # Handicap
+        # Handicap + Asian odds
         bh = r["best_handicap"]
         if bh["push"] > 0.01:
-            lines.append(
+            hcap_str = (
                 f"- 🎯 **让球** ({c1}{bh['line']:+.1f}): "
                 f"赢盘 {bh['cover']*100:.0f}% / 走水 {bh['push']*100:.0f}% "
                 f"/ 输盘 {bh['not_cover']*100:.0f}%"
             )
         else:
-            lines.append(
+            hcap_str = (
                 f"- 🎯 **让球** ({c1}{bh['line']:+.1f}): "
                 f"赢盘 {bh['cover']*100:.0f}% / 输盘 {bh['not_cover']*100:.0f}%"
             )
+
+        # Add Asian odds from live API if available
+        if odds and odds.get("asian") and odds["asian"].get("line") is not None:
+            al = odds["asian"]
+            hcap_str += f" | 亚盘 {al['line']:+.1f}线 赔{al.get('home', '?')}/{al.get('away', '?')}"
+        elif odds and odds["source"] == "ELO隐含":
+            hcap_str += " (ELO隐含)"
+
+        lines.append(hcap_str)
 
         # Scores
         score_strs = []
@@ -401,7 +552,10 @@ def format_wechat(results, match_date_str):
         lines.append(f"- 💡 **状态**: {c1} {fs1}({fd1}) | {c2} {fs2}({fd2})")
 
         # ELO comparison
-        lines.append(f"- 📈 **ELO**: {c1} {r['elo1']} vs {c2} {r['elo2']} (差{r['elo1']-r['elo2']:+d})")
+        lines.append(
+            f"- 📈 **ELO**: {c1} {r['elo1']} vs {c2} {r['elo2']} "
+            f"(差{r['elo1']-r['elo2']:+d})"
+        )
 
         lines.append("")
 
@@ -409,12 +563,16 @@ def format_wechat(results, match_date_str):
         lines.append("---")
         lines.append("### ⏳ 待定场次")
         for s in skipped:
-            lines.append(f"- {flag(s['team1'])} {s['team1']} vs {flag(s['team2'])} {s['team2']}: {s['reason']}")
+            lines.append(
+                f"- {flag(s['team1'])} {cn(s['team1'])} vs "
+                f"{flag(s['team2'])} {cn(s['team2'])}: {s['reason']}"
+            )
         lines.append("")
 
     lines.append("---")
-    lines.append("> 🤖 分析模型: ELO Ratings + Poisson分布 + 近期状态加权")
-    lines.append(f"> 📊 数据来源: ESPN/DTAI | 仅供参考，不构成投注建议")
+    lines.append("> 🤖 模型: ELO + Poisson + 近期状态加权")
+    lines.append("> 💰 赔率: ELO隐含赔率 (配置ODDS_API_KEY获取实时赔率)")
+    lines.append("> ⚠ 仅供参考，不构成投注建议")
 
     return "\n".join(lines)
 
@@ -425,20 +583,12 @@ def format_wechat(results, match_date_str):
 def send_wechat(content):
     """Push markdown to WeChat Work bot, auto-split on 4096 byte limit."""
     max_bytes = 3900
-
     if len(content.encode("utf-8")) <= max_bytes:
         return _do_send(content)
 
-    # Split on match boundaries (## headers)
     sections = content.split("\n## ")
-    sections[0] = sections[0]  # header stays as-is
-
     for i, sec in enumerate(sections):
-        if i == 0:
-            chunk = sec
-        else:
-            chunk = "## " + sec
-
+        chunk = sec if i == 0 else "## " + sec
         tag = f" ({i + 1}/{len(sections)})" if len(sections) > 1 else ""
         _do_send(chunk + tag)
 
@@ -466,18 +616,23 @@ def main():
 
     parser = argparse.ArgumentParser(description="World Cup 2026 Prediction Engine")
     parser.add_argument("--date", help="Target date YYYY-MM-DD (default: tomorrow CST)")
-    parser.add_argument("--dry-run", action="store_true", help="Print only, don't send to WeChat")
+    parser.add_argument("--dry-run", action="store_true", help="Print only, no WeChat push")
+    parser.add_argument("--no-odds", action="store_true", help="Skip odds fetch (faster)")
     args = parser.parse_args()
 
     print("=" * 56)
     print("  ⚽ World Cup 2026 Prediction Engine")
     print("=" * 56)
 
-    # Load data
     all_matches, elo_data, form_data = load_data()
-    print(f"[数据] 加载 {len(all_matches)} 场比赛, "
-          f"{len(elo_data['teams'])} 支球队ELO, "
-          f"{len(form_data['forms'])} 条近期状态")
+    print(f"[数据] {len(all_matches)}场比赛, "
+          f"{len(elo_data['teams'])}队ELO, "
+          f"{len(form_data['forms'])}条状态")
+
+    if ODDS_API_KEY:
+        print(f"[赔率] 实时赔率已启用 (the-odds-api)")
+    else:
+        print(f"[赔率] 使用ELO隐含赔率 (设置ODDS_API_KEY启用实时)")
 
     # Determine target date
     if args.date:
@@ -488,7 +643,6 @@ def main():
         target_date = (now_cst + timedelta(days=1)).date()
         target_str = target_date.strftime("%m月%d日")
 
-    # Filter matches
     target_matches = [
         m for m in all_matches
         if m.get("date") == target_date.strftime("%Y-%m-%d")
@@ -500,13 +654,14 @@ def main():
 
     print(f"\n[赛程] {target_str} 共 {len(target_matches)} 场比赛")
 
-    # Analyze each match
+    fetch_odds = not args.no_odds
     results = []
     for m in target_matches:
         t1, t2 = m["team1"], m["team2"]
         c1, c2 = cn(t1), cn(t2)
-        print(f"\n[分析] {c1} vs {c2}")
-        result = analyze_match(m, elo_data, form_data)
+        bj_time, nd = to_beijing_time(m.get("time", ""))
+        print(f"\n[分析] {c1} vs {c2} ({bj_time} 北京)")
+        result = analyze_match(m, elo_data, form_data, fetch_odds=fetch_odds)
         results.append(result)
         if result.get("skip"):
             print(f"  ⏭ {result['reason']}")
@@ -516,8 +671,9 @@ def main():
                   f"{result['draw']*100:.0f}% / {result['win2']*100:.0f}%")
             score_strs = [f"{g[0]}-{g[1]}" for g in result["scores"]]
             print(f"  比分: {' / '.join(score_strs)}")
+            if result.get("odds"):
+                print(f"  赔率: {odds_summary(result['odds'], result['elo1'], result['elo2'])}")
 
-    # Format & send
     msg = format_wechat(results, target_str)
     print(f"\n{'=' * 56}")
     print(msg)
