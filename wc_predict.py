@@ -575,63 +575,54 @@ def _render_single_image(date_str, c1, c2, group, time_disp, venue, rows_data, f
     x_margin = 0.08
     right_edge = 0.92
 
-    # ---- Title ----
-    y = 0.96
-    ax.text(0.5, y, f"World Cup 2026 世界杯预测",
-            fontsize=18, fontweight="bold", color="#ffffff",
+    # ---- Header: compact title + fixture ----
+    y = 0.97
+    ax.text(0.5, y, f"World Cup 2026 世界杯预测 · {date_str}",
+            fontsize=12, color="#e94560",
             fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
-    y -= 0.055
-    ax.text(0.5, y, f"{date_str} 比赛日",
-            fontsize=14, fontweight="bold", color="#e94560",
+    y -= 0.045
+    ax.text(0.5, y, f"{c1}  vs  {c2}",
+            fontsize=16, fontweight="bold", color="#ffffff",
             fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
-    y -= 0.08
+    y -= 0.05
+    ax.text(0.5, y, f"{group}  |  {time_disp}  |  {venue}",
+            fontsize=10, color="#aaaaaa",
+            fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
+    y -= 0.06
 
     # ---- Separator ----
     ax.plot([x_margin, right_edge], [y, y],
-            color="#444477", linewidth=1.0, transform=ax.transAxes, clip_on=False)
-    y -= 0.06
-
-    # ---- Match fixture ----
-    ax.text(0.5, y, f"{c1}  vs  {c2}",
-            fontsize=20, fontweight="bold", color="#ffffff",
-            fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
-    y -= 0.065
-    ax.text(0.5, y, f"{group}  |  {time_disp}  |  {venue}",
-            fontsize=11, color="#aaaaaa",
-            fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
-    y -= 0.09
-
-    # ---- Data section ----
-    ax.plot([x_margin, right_edge], [y, y],
             color="#444477", linewidth=0.5, transform=ax.transAxes, clip_on=False)
-    y -= 0.05
-    ax.text(x_margin, y, "DATA  数据",
-            fontsize=14, fontweight="bold", color="#f0c040",
-            fontfamily=font_name, transform=ax.transAxes, va="top")
-    y -= 0.07
-
-    for row in rows_data[0][1]:  # Data rows
-        ax.text(0.5, y, row,
-                fontsize=12, color="#d0d0e0",
-                fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
-        y -= 0.06
     y -= 0.04
 
-    # ---- Prediction section ----
+    # ---- Data section (compact) ----
+    ax.text(x_margin, y, "DATA  数据",
+            fontsize=12, fontweight="bold", color="#f0c040",
+            fontfamily=font_name, transform=ax.transAxes, va="top")
+    y -= 0.055
+
+    for row in rows_data[0][1]:
+        ax.text(0.5, y, row,
+                fontsize=10.5, color="#d0d0e0",
+                fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
+        y -= 0.05
+    y -= 0.03
+
+    # ---- Prediction section (main, large) ----
     ax.plot([x_margin, right_edge], [y, y],
             color="#444477", linewidth=0.5, transform=ax.transAxes, clip_on=False)
-    y -= 0.05
+    y -= 0.04
     ax.text(x_margin, y, "PREDICT  预测",
             fontsize=14, fontweight="bold", color="#f0c040",
             fontfamily=font_name, transform=ax.transAxes, va="top")
-    y -= 0.07
+    y -= 0.08
 
-    for row in rows_data[1][1]:  # Prediction rows
+    for row in rows_data[1][1]:
         ax.text(0.5, y, row,
-                fontsize=12, color="#d0d0e0",
+                fontsize=12.5, color="#d0d0e0",
                 fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
-        y -= 0.065
-    y -= 0.03
+        y -= 0.075
+    y -= 0.02
 
     # Save
     buf = io.BytesIO()
