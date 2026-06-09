@@ -438,6 +438,13 @@ def _do_send(content):
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="World Cup 2026 Prediction Engine")
+    parser.add_argument("--date", help="Target date YYYY-MM-DD (default: tomorrow CST)")
+    parser.add_argument("--dry-run", action="store_true", help="Print only, don't send to WeChat")
+    args = parser.parse_args()
+
     print("=" * 56)
     print("  ⚽ World Cup 2026 Prediction Engine")
     print("=" * 56)
@@ -448,20 +455,30 @@ def main():
           f"{len(elo_data['teams'])} 支球队ELO, "
           f"{len(form_data['forms'])} 条近期状态")
 
-    # Get tomorrow's matches (CST)
-    tomorrow_matches = get_tomorrow_matches_cst(all_matches)
-    now_cst = datetime.now(CST)
-    tomorrow = (now_cst + timedelta(days=1)).strftime("%m月%d日")
+    # Determine target date
+    if args.date:
+        target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
+        target_str = target_date.strftime("%m月%d日")
+    else:
+        now_cst = datetime.now(CST)
+        target_date = (now_cst + timedelta(days=1)).date()
+        target_str = target_date.strftime("%m月%d日")
 
-    if not tomorrow_matches:
-        print(f"\n[信息] {tomorrow} 无比赛安排，跳过")
+    # Filter matches
+    target_matches = [
+        m for m in all_matches
+        if m.get("date") == target_date.strftime("%Y-%m-%d")
+    ]
+
+    if not target_matches:
+        print(f"\n[信息] {target_str} 无比赛安排，跳过")
         return
 
-    print(f"\n[赛程] {tomorrow} 共 {len(tomorrow_matches)} 场比赛")
+    print(f"\n[赛程] {target_str} 共 {len(target_matches)} 场比赛")
 
     # Analyze each match
     results = []
-    for m in tomorrow_matches:
+    for m in target_matches:
         t1, t2 = m["team1"], m["team2"]
         print(f"\n[分析] {t1} vs {t2}")
         result = analyze_match(m, elo_data, form_data)
@@ -476,10 +493,14 @@ def main():
             print(f"  比分: {' / '.join(score_strs)}")
 
     # Format & send
-    msg = format_wechat(results, tomorrow)
+    msg = format_wechat(results, target_str)
     print(f"\n{'=' * 56}")
     print(msg)
     print(f"{'=' * 56}")
+
+    if args.dry_run:
+        print("\n🔇 dry-run模式，跳过推送")
+        return
 
     print("\n📤 发送到企业微信...")
     ok = send_wechat(msg)
