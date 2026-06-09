@@ -1,0 +1,30 @@
+name: World Cup Daily Prediction
+
+on:
+  schedule:
+    # 20:00 UTC = 04:00 CST next day (night before match day)
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run predictions
+        env:
+          TZ: Asia/Shanghai
+          WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
+        run: python wc_predict.py
