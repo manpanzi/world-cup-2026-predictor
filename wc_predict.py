@@ -495,7 +495,10 @@ def format_wechat(results, match_date_str):
         lines.append(f"> {group} | {time_display} | {venue}")
         lines.append("")
 
-        # Win/Draw/Loss + European odds
+        # === DATA SECTION ===
+        lines.append("**📊 数据**")
+
+        # European odds
         odds = r.get("odds")
         if odds:
             eu = odds.get("european", {})
@@ -504,58 +507,55 @@ def format_wechat(results, match_date_str):
             a_odd = eu.get("away")
             odd_src = odds.get("source", "ELO隐含")
             if h_odd and d_odd and a_odd:
-                lines.append(
-                    f"- 📊 **胜负**: {c1}胜 {w1:.0f}% / 平 {d:.0f}% / {c2}胜 {w2:.0f}%")
-                lines.append(
-                    f"- 💰 **欧盘**: 胜{h_odd} / 平{d_odd} / 负{a_odd} ({odd_src})")
+                lines.append(f"- 💰 欧盘: 胜{h_odd} / 平{d_odd} / 负{a_odd} ({odd_src})")
             else:
-                lines.append(
-                    f"- 📊 **胜负**: {c1}胜 {w1:.0f}% / 平 {d:.0f}% / {c2}胜 {w2:.0f}%")
+                lines.append(f"- 💰 欧盘: 暂无 ({odd_src})")
         else:
-            lines.append(
-                f"- 📊 **胜负**: {c1}胜 {w1:.0f}% / 平 {d:.0f}% / {c2}胜 {w2:.0f}%")
-
-        # Handicap + Asian odds
-        bh = r["best_handicap"]
-        if bh["push"] > 0.01:
-            hcap_str = (
-                f"- 🎯 **让球** ({c1}{bh['line']:+.1f}): "
-                f"赢盘 {bh['cover']*100:.0f}% / 走水 {bh['push']*100:.0f}% "
-                f"/ 输盘 {bh['not_cover']*100:.0f}%"
-            )
-        else:
-            hcap_str = (
-                f"- 🎯 **让球** ({c1}{bh['line']:+.1f}): "
-                f"赢盘 {bh['cover']*100:.0f}% / 输盘 {bh['not_cover']*100:.0f}%"
-            )
-
-        # Add Asian odds from live API if available
-        if odds and odds.get("asian") and odds["asian"].get("line") is not None:
-            al = odds["asian"]
-            hcap_str += f" | 亚盘 {al['line']:+.1f}线 赔{al.get('home', '?')}/{al.get('away', '?')}"
-        elif odds and odds["source"] == "ELO隐含":
-            hcap_str += " (ELO隐含)"
-
-        lines.append(hcap_str)
-
-        # Scores
-        score_strs = []
-        for ga, gb, prob in r["scores"]:
-            score_strs.append(f"{ga}-{gb} ({prob*100:.1f}%)")
-        lines.append(f"- ⚽ **比分**: {' / '.join(score_strs)}")
+            lines.append(f"- 💰 欧盘: ELO隐含 胜{1/w1*100:.0f}%/{1/d*100:.0f}%/{1/w2*100:.0f}%")
 
         # Form
         fd1 = form_to_display(r["form1"])
         fd2 = form_to_display(r["form2"])
         fs1 = form_summary(r["form1"])
         fs2 = form_summary(r["form2"])
-        lines.append(f"- 💡 **状态**: {c1} {fs1}({fd1}) | {c2} {fs2}({fd2})")
+        lines.append(f"- 💡 状态: {c1} {fs1}({fd1}) | {c2} {fs2}({fd2})")
 
-        # ELO comparison
+        # ELO
+        lines.append(f"- 📈 ELO: {c1} {r['elo1']} vs {c2} {r['elo2']} (差{r['elo1']-r['elo2']:+d})")
+
+        lines.append("")
+
+        # === PREDICTION SECTION ===
+        lines.append("**🔮 预测**")
+
+        # Win/Draw/Loss
         lines.append(
-            f"- 📈 **ELO**: {c1} {r['elo1']} vs {c2} {r['elo2']} "
-            f"(差{r['elo1']-r['elo2']:+d})"
+            f"- 📊 胜负: {c1} {w1:.0f}% / 平 {d:.0f}% / {c2} {w2:.0f}%"
         )
+
+        # Handicap
+        bh = r["best_handicap"]
+        if bh["push"] > 0.01:
+            hcap_str = (
+                f"- 🎯 让球 ({c1}{bh['line']:+.1f}): "
+                f"赢盘 {bh['cover']*100:.0f}% / 走水 {bh['push']*100:.0f}% "
+                f"/ 输盘 {bh['not_cover']*100:.0f}%"
+            )
+        else:
+            hcap_str = (
+                f"- 🎯 让球 ({c1}{bh['line']:+.1f}): "
+                f"赢盘 {bh['cover']*100:.0f}% / 输盘 {bh['not_cover']*100:.0f}%"
+            )
+        if odds and odds.get("asian") and odds["asian"].get("line") is not None:
+            al = odds["asian"]
+            hcap_str += f" | 亚盘赔 {al.get('home', '?')}/{al.get('away', '?')}"
+        lines.append(hcap_str)
+
+        # Scores
+        score_strs = []
+        for ga, gb, prob in r["scores"]:
+            score_strs.append(f"{ga}-{gb} ({prob*100:.1f}%)")
+        lines.append(f"- ⚽ 比分: {' / '.join(score_strs)}")
 
         lines.append("")
 
