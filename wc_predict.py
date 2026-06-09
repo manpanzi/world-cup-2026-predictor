@@ -775,8 +775,8 @@ def format_wechat(results, match_date_str):
 # ---------- WeChat send ----------
 
 
-def send_wechat_images(images, match_date_str):
-    """Push prediction images to WeChat Work bot, one per match."""
+def send_wechat_images(images, results, match_date_str):
+    """Push prediction images to WeChat Work bot, one per match, + parlay text."""
     print(f"\n📤 推送 {len(images)} 张预测图到企业微信...")
 
     # Header message
@@ -968,7 +968,7 @@ def main():
         print("\n🔇 dry-run模式，跳过推送")
         return
 
-    send_wechat_images(images, target_str)
+    send_wechat_images(images, results, target_str)
     print("✅ 推送完成")
 
 
