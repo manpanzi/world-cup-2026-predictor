@@ -545,8 +545,7 @@ def render_prediction_image(results, match_date_str):
         # Render
         label = f"{flag(t1)}{c1}vs{flag(t2)}{c2}"
         img_b64, img_md5 = _render_single_image(
-            match_date_str, flag(t1), c1, flag(t2), c2,
-            group, time_display, venue, rows_data, font_name
+            match_date_str, c1, c2, group, time_display, venue, rows_data, font_name
         )
         images.append((label, img_b64, img_md5))
 
@@ -566,57 +565,91 @@ def _score_text(scores):
 
 
 def _render_single_image(date_str, f1, c1, f2, c2, group, time_disp, venue, rows_data, font_name):
-    """Render one match as a PNG image and return (base64, md5)."""
-    fig, ax = plt.subplots(figsize=(8, 4.2))
+    """Render one match as a vertical PNG for mobile viewing."""
+    fig, ax = plt.subplots(figsize=(6, 8))
     ax.axis("off")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
     fig.patch.set_facecolor("#1a1a2e")
 
-    y = 1.0
-    x_margin = 0.04
+    x_margin = 0.08
+    right_edge = 0.92
 
-    # Title
-    ax.text(x_margin, y, f"World Cup 世界杯预测 | {date_str}比赛日",
-            fontsize=13, fontweight="bold", color="#e94560",
-            fontfamily=font_name, transform=ax.transAxes, va="top")
+    # ---- Top accent bar ----
+    ax.add_patch(plt.Rectangle((0, 0.975), 1, 0.025, color="#e94560", transform=ax.transAxes, clip_on=False))
+
+    # ---- Title ----
+    y = 0.94
+    ax.text(0.5, y, f"World Cup 2026 世界杯预测",
+            fontsize=18, fontweight="bold", color="#ffffff",
+            fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
+    y -= 0.055
+    ax.text(0.5, y, f"{date_str} 比赛日",
+            fontsize=14, fontweight="bold", color="#e94560",
+            fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
     y -= 0.08
 
-    # Match line
-    ax.text(x_margin, y, f"{c1} vs {c2}",
-            fontsize=12, fontweight="bold", color="#ffffff",
-            fontfamily=font_name, transform=ax.transAxes, va="top")
+    # ---- Separator ----
+    ax.plot([x_margin, right_edge], [y, y],
+            color="#444477", linewidth=1.0, transform=ax.transAxes, clip_on=False)
     y -= 0.06
-    ax.text(x_margin, y, f"{group} | {time_disp} | {venue}",
-            fontsize=8, color="#aaaaaa",
+
+    # ---- Match fixture ----
+    ax.text(0.5, y, f"{c1}  vs  {c2}",
+            fontsize=20, fontweight="bold", color="#ffffff",
+            fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
+    y -= 0.065
+    ax.text(0.5, y, f"{group}  |  {time_disp}  |  {venue}",
+            fontsize=11, color="#aaaaaa",
+            fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
+    y -= 0.09
+
+    # ---- Data section ----
+    ax.plot([x_margin, right_edge], [y, y],
+            color="#444477", linewidth=0.5, transform=ax.transAxes, clip_on=False)
+    y -= 0.05
+    ax.text(x_margin, y, "DATA  数据",
+            fontsize=14, fontweight="bold", color="#f0c040",
             fontfamily=font_name, transform=ax.transAxes, va="top")
-    y -= 0.10
+    y -= 0.07
 
-    # Sections
-    for section_title, rows in rows_data:
-        # Section header
-        ax.text(x_margin, y, section_title,
-                fontsize=10, fontweight="bold", color="#f0c040",
-                fontfamily=font_name, transform=ax.transAxes, va="top")
-        y -= 0.01
-        # Separator line
-        ax.plot([x_margin, 0.96], [y + 0.005, y + 0.005],
-                color="#333366", linewidth=0.5, transform=ax.transAxes, clip_on=False)
+    for row in rows_data[0][1]:  # Data rows
+        ax.text(0.5, y, row,
+                fontsize=12, color="#d0d0e0",
+                fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
         y -= 0.06
+    y -= 0.04
 
-        for row in rows:
-            ax.text(x_margin + 0.02, y, row,
-                    fontsize=8.5, color="#d0d0e0",
-                    fontfamily=font_name, transform=ax.transAxes, va="top")
-            y -= 0.055
-        y -= 0.02
+    # ---- Prediction section ----
+    ax.plot([x_margin, right_edge], [y, y],
+            color="#444477", linewidth=0.5, transform=ax.transAxes, clip_on=False)
+    y -= 0.05
+    ax.text(x_margin, y, "PREDICT  预测",
+            fontsize=14, fontweight="bold", color="#f0c040",
+            fontfamily=font_name, transform=ax.transAxes, va="top")
+    y -= 0.07
 
-    # Footer
-    ax.text(x_margin, 0.02, "ELO + Poisson + 近期状态  |  ELO隐含赔率  |  仅供参考",
-            fontsize=6.5, color="#666688", fontfamily=font_name,
-            transform=ax.transAxes, va="bottom")
+    for row in rows_data[1][1]:  # Prediction rows
+        ax.text(0.5, y, row,
+                fontsize=12, color="#d0d0e0",
+                fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
+        y -= 0.065
+    y -= 0.03
 
-    # Save to bytes
+    # ---- Footer ----
+    ax.plot([x_margin, right_edge], [y, y],
+            color="#444477", linewidth=0.5, transform=ax.transAxes, clip_on=False)
+    y -= 0.04
+    ax.text(0.5, 0.03, "ELO + Poisson + 近期状态  |  ELO隐含赔率  |  仅供参考",
+            fontsize=9, color="#666688", fontfamily=font_name,
+            transform=ax.transAxes, va="center", ha="center")
+
+    # ---- Bottom accent bar ----
+    ax.add_patch(plt.Rectangle((0, 0.0), 1, 0.008, color="#e94560", transform=ax.transAxes, clip_on=False))
+
+    # Save
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=120, bbox_inches="tight",
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
                 facecolor="#1a1a2e", edgecolor="none")
     plt.close(fig)
     buf.seek(0)
