@@ -529,13 +529,13 @@ def render_prediction_image(results, match_date_str):
         # Build table data
         rows_data = [
             # (section, rows...)
-            ("📊 数据", [
+            ("[ DATA 数据 ]", [
                 f"欧盘: 胜{eu.get('home','-')} / 平{eu.get('draw','-')} / 负{eu.get('away','-')}",
                 f"状态: {c1} {fs1}({fd1})",
                 f"      {c2} {fs2}({fd2})",
                 f"ELO:  {c1} {r['elo1']} vs {c2} {r['elo2']} (差{r['elo1']-r['elo2']:+d})",
             ]),
-            ("🔮 预测", [
+            ("[ PREDICT 预测 ]", [
                 f"{c1}胜 {w1:.0f}%   平 {d:.0f}%   {c2}胜 {w2:.0f}%",
                 _hcap_text(c1, bh),
                 _score_text(r["scores"]),
