@@ -206,6 +206,32 @@ def implied_odds_from_elo(elo1, elo2):
     }
 
 
+def _round_odds(raw):
+    """Round to 0.5 increments (竞彩 format), min 1.20."""
+    val = int(raw * 2) / 2
+    return max(1.20, val)
+
+
+def lottery_odds(elo1, elo2, w1, d, w2):
+    """
+    Estimated Chinese Sports Lottery odds (竞彩赔率).
+    Uses ~88% payout rate, min odds 1.20, draw min 2.50.
+    """
+    payout = 0.88
+    home = max(1.20, _round_odds(1.0 / w1 * payout))
+    draw = max(2.50, _round_odds(1.0 / d * payout))
+    away = max(1.20, _round_odds(1.0 / w2 * payout))
+    return {"home": home, "draw": draw, "away": away}
+
+
+def handicap_lottery_odds(cover_p, not_cover_p):
+    """Estimated 竞彩让球赔率 for handicap line."""
+    payout = 0.85
+    cover = _round_odds(1.0 / cover_p * payout) if cover_p > 0 else 9.99
+    not_cover = _round_odds(1.0 / not_cover_p * payout) if not_cover_p > 0 else 9.99
+    return {"cover": cover, "not_cover": not_cover}
+
+
 def fetch_live_odds(team1, team2, elo1, elo2):
     """
     Fetch live odds from the-odds-api.com.
@@ -378,6 +404,10 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False):
     if fetch_odds:
         odds = fetch_live_odds(team1, team2, elo1, elo2)
 
+    # Lottery odds (竞彩)
+    lotto = lottery_odds(elo1, elo2, w1, d, w2)
+    best_hcap_lotto = handicap_lottery_odds(best_hcap["cover"], best_hcap["not_cover"])
+
     return {
         "skip": False,
         "team1": team1, "team2": team2,
@@ -389,6 +419,8 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False):
         "win1": w1, "draw": d, "win2": w2,
         "handicaps": hcaps,
         "best_handicap": best_hcap,
+        "lotto": lotto,
+        "hcap_lotto": best_hcap_lotto,
         "scores": scores,
         "total_goals": total_goals,
         "form1": form1_str, "form2": form2_str,
@@ -550,14 +582,14 @@ def render_prediction_image(results, match_date_str):
         rows_data = [
             # (section, rows...)
             ("[ DATA 数据 ]", [
-                f"欧盘: 胜{eu.get('home','-')} / 平{eu.get('draw','-')} / 负{eu.get('away','-')}",
+                f"竞彩: 胜{r['lotto']['home']} / 平{r['lotto']['draw']} / 负{r['lotto']['away']}",
                 f"状态: {c1} {fs1}({fd1})",
                 f"      {c2} {fs2}({fd2})",
                 f"ELO:  {c1} {r['elo1']} vs {c2} {r['elo2']} (差{r['elo1']-r['elo2']:+d})",
             ]),
             ("[ PREDICT 预测 ]", [
                 f"{c1}胜 {w1:.0f}%   平 {d:.0f}%   {c2}胜 {w2:.0f}%",
-                _hcap_text(c1, bh),
+                _hcap_text(c1, bh, r.get("hcap_lotto")),
                 _score_text(r["scores"]),
                 _total_text(r["total_goals"]),
             ]),
@@ -573,11 +605,15 @@ def render_prediction_image(results, match_date_str):
     return images
 
 
-def _hcap_text(c1, bh):
+def _hcap_text(c1, bh, hcap_lotto=None):
     hcap_line = f"{c1}{bh['line']:+.1f}"
+    base = f"让球 {hcap_line}: 赢盘 {bh['cover']*100:.0f}%"
     if bh["push"] > 0.01:
-        return f"让球 {hcap_line}: 赢盘 {bh['cover']*100:.0f}% / 走水 {bh['push']*100:.0f}% / 输盘 {bh['not_cover']*100:.0f}%"
-    return f"让球 {hcap_line}: 赢盘 {bh['cover']*100:.0f}% / 输盘 {bh['not_cover']*100:.0f}%"
+        base += f" / 走水 {bh['push']*100:.0f}%"
+    base += f" / 输盘 {bh['not_cover']*100:.0f}%"
+    if hcap_lotto:
+        base += f" (赔 {hcap_lotto['cover']}/{hcap_lotto['not_cover']})"
+    return base
 
 
 def _score_text(scores):
@@ -828,32 +864,34 @@ def send_wechat_images(images, results, match_date_str):
 
 
 def generate_parlay(results, match_date_str):
-    """Build top 3 parlay combos, mixing win/loss and handicap picks."""
+    """Build top 3 parlay combos, mixing win/loss and handicap picks. Includes 竞彩赔率."""
     analyzed = [r for r in results if not r.get("skip")]
     if len(analyzed) < 2:
         return None
 
-    # Build pick pool: each match contributes win AND handicap options
-    pool = []        # [(team_cn, picks)], picks = [(label, prob, type)]
+    # Build pick pool: each match contributes win AND handicap options + lottery odds
+    pool = []  # picks = [(label, prob, type, lotto_odds)]
     for r in analyzed:
         c1, c2 = cn(r["team1"]), cn(r["team2"])
         w1, d, w2 = r["win1"], r["draw"], r["win2"]
-        bh = r["best_handicap"]
+        lotto = r["lotto"]
+        hcap_lotto = r.get("hcap_lotto", {})
 
         match_picks = []
-        # Win/Loss pick for the favorite side
+        # Win/Loss pick for the favorite side, with 竞彩 odds
         if w1 >= w2:
-            match_picks.append((f"{c1}胜", w1, "胜负"))
+            match_picks.append((f"{c1}胜", w1, "胜负", lotto["home"]))
         else:
-            match_picks.append((f"{c2}胜", w2, "胜负"))
+            match_picks.append((f"{c2}胜", w2, "胜负", lotto["away"]))
 
-        # Handicap picks — always include, use different lines
+        # Handicap picks with 竞彩 odds
         for h in r["handicaps"]:
             cover_p = h["cover"]
             if cover_p >= 0.45:
                 tag = f"{c1}{h['line']:+.1f}赢盘"
-                match_picks.append((tag, cover_p, "让球"))
-                break  # one best handicap per match
+                hlotto = handicap_lottery_odds(cover_p, h["not_cover"])
+                match_picks.append((tag, cover_p, "让球", hlotto["cover"]))
+                break
 
         if match_picks:
             pool.append((c1, match_picks))
@@ -877,11 +915,9 @@ def generate_parlay(results, match_date_str):
     has_big = False
 
     for combo in all_combos:
-        picks, prob = combo
+        picks, prob, total_odds = combo
         size = len(picks)
-        types_in = set(p[2] for p in picks)
 
-        # First pass: try to get variety
         if len(top) >= 3:
             break
 
@@ -898,15 +934,19 @@ def generate_parlay(results, match_date_str):
     labels = {2: "2串1", 3: "3串1", 4: "4串1", 5: "5串1"}
     lines = [f"# 🎯 串关精选 | {match_date_str}", ""]
 
-    for i, (picks, prob) in enumerate(top):
+    for i, (picks, prob, total_odds) in enumerate(top):
         size = len(picks)
         label = labels.get(size, f"{size}串1")
         tags = ["🥇", "🥈", "🥉"]
         combo_str = " × ".join(f"**{p[0]}**" for p in picks)
-        lines.append(f"### {tags[i]} {label} (综合 `{prob*100:.0f}%`)")
+        lines.append(
+            f"### {tags[i]} {label} (胜率 `{prob*100:.0f}%` / 总赔率 `{total_odds}`)"
+        )
         lines.append(f"> {combo_str}")
         lines.append("")
-        detail = " | ".join(f"{p[0]} [{p[2]}] `{p[1]*100:.0f}%`" for p in picks)
+        detail = " | ".join(
+            f"{p[0]} [{p[2]}] {p[1]*100:.0f}% @{p[3]}" for p in picks
+        )
         lines.append(f"明细: {detail}")
         lines.append("")
 
@@ -915,15 +955,18 @@ def generate_parlay(results, match_date_str):
 
 
 def _recurse_combos_v2(pool, indices, depth, current_picks, current_prob, results):
-    """Recursively build combo variations, preserving pick type (胜负/让球)."""
+    """Recursively build combo variations, preserving pick type and lottery odds."""
     if depth == len(indices):
-        results.append((list(current_picks), current_prob))
+        total_odds = 1.0
+        for p in current_picks:
+            total_odds *= p[3]  # lottery odds
+        results.append((list(current_picks), current_prob, round(total_odds, 2)))
         return
 
     _, match_picks = pool[indices[depth]]
-    for pick_name, pick_prob, pick_type in match_picks:
+    for pick_name, pick_prob, pick_type, lotto_odds in match_picks:
         _recurse_combos_v2(pool, indices, depth + 1,
-                           current_picks + [(pick_name, pick_prob, pick_type)],
+                           current_picks + [(pick_name, pick_prob, pick_type, lotto_odds)],
                            current_prob * pick_prob, results)
 
 
