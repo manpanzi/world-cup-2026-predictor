@@ -575,11 +575,8 @@ def _render_single_image(date_str, c1, c2, group, time_disp, venue, rows_data, f
     x_margin = 0.08
     right_edge = 0.92
 
-    # ---- Top accent bar ----
-    ax.add_patch(plt.Rectangle((0, 0.975), 1, 0.025, color="#e94560", transform=ax.transAxes, clip_on=False))
-
     # ---- Title ----
-    y = 0.94
+    y = 0.96
     ax.text(0.5, y, f"World Cup 2026 世界杯预测",
             fontsize=18, fontweight="bold", color="#ffffff",
             fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
@@ -635,17 +632,6 @@ def _render_single_image(date_str, c1, c2, group, time_disp, venue, rows_data, f
                 fontfamily=font_name, transform=ax.transAxes, va="top", ha="center")
         y -= 0.065
     y -= 0.03
-
-    # ---- Footer ----
-    ax.plot([x_margin, right_edge], [y, y],
-            color="#444477", linewidth=0.5, transform=ax.transAxes, clip_on=False)
-    y -= 0.04
-    ax.text(0.5, 0.03, "ELO + Poisson + 近期状态  |  ELO隐含赔率  |  仅供参考",
-            fontsize=9, color="#666688", fontfamily=font_name,
-            transform=ax.transAxes, va="center", ha="center")
-
-    # ---- Bottom accent bar ----
-    ax.add_patch(plt.Rectangle((0, 0.0), 1, 0.008, color="#e94560", transform=ax.transAxes, clip_on=False))
 
     # Save
     buf = io.BytesIO()
