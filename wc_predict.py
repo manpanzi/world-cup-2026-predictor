@@ -13,6 +13,7 @@ import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
+from itertools import combinations
 
 import requests
 from matplotlib import font_manager
@@ -827,43 +828,100 @@ def send_wechat_images(images, results, match_date_str):
 
 
 def generate_parlay(results, match_date_str):
-    """Build a parlay suggestion from analyzed matches."""
+    """Build top 3 parlay combos from analyzed matches (2串1, 3串1, 3串4 etc)."""
     analyzed = [r for r in results if not r.get("skip")]
     if len(analyzed) < 2:
         return None
 
-    picks = []
+    # Build pick pool: for each match, list all viable picks with probability
+    pool = []
     for r in analyzed:
         c1, c2 = cn(r["team1"]), cn(r["team2"])
         w1, d, w2 = r["win1"], r["draw"], r["win2"]
         bh = r["best_handicap"]
 
-        # Pick the strongest signal for each match
+        match_picks = []
+        # Strong favorite → pick win
         if w1 >= 0.50:
-            picks.append(f"{c1}胜({w1*100:.0f}%)")
+            match_picks.append((f"{c1}胜", w1))
         elif w2 >= 0.50:
-            picks.append(f"{c2}胜({w2*100:.0f}%)")
-        elif w1 > w2:
-            picks.append(f"{c1}不败(胜平){w1*100+d*100:.0f}%")
+            match_picks.append((f"{c2}胜", w2))
         else:
-            picks.append(f"{c2}不败(胜平){w2*100+d*100:.0f}%")
+            # Close match → pick the slight favorite
+            if w1 > w2:
+                match_picks.append((f"{c1}胜", w1))
+            else:
+                match_picks.append((f"{c2}胜", w2))
 
-    if not picks:
+        # Handicap pick (if strong signal)
+        hline = bh["line"]
+        cover_p = bh["cover"]
+        if cover_p >= 0.62:
+            match_picks.append((f"{c1}{hline:+.1f}赢盘", cover_p))
+
+        if match_picks:
+            pool.append(match_picks)
+
+    if len(pool) < 2:
         return None
 
-    combo = " + ".join(picks)
-    total_prob = 1.0
-    for r in analyzed:
-        w1, w2 = r["win1"], r["win2"]
-        total_prob *= max(w1, w2)
-    total_prob *= 100
+    # Generate combos: pick one option per match, size 2 to N
+    all_combos = []
+    for size in range(2, min(len(pool) + 1, 6)):
+        for indices in combinations(range(len(pool)), size):
+            # For each combination of matches, try each pick per match
+            _recurse_combos(pool, indices, 0, [], 1.0, all_combos)
 
-    return (
-        f"# 🎯 串关建议 | {match_date_str}\n\n"
-        f"> {combo}\n\n"
-        f"综合概率约 `{total_prob:.0f}%`\n\n"
-        f"> ⚠ 仅供参考，理性投注"
-    )
+    if not all_combos:
+        return None
+
+    all_combos.sort(key=lambda x: x[1], reverse=True)
+
+    # Pick top 3 diverse combos (different sizes preferred)
+    seen_sizes = set()
+    top = []
+    for combo in all_combos:
+        size = len(combo[0])
+        if len(top) < 3:
+            if size not in seen_sizes or len(top) >= 1:
+                top.append(combo)
+                seen_sizes.add(size)
+        if len(top) >= 3:
+            break
+
+    # Format message
+    labels = {2: "2串1", 3: "3串1", 4: "4串1", 5: "5串1"}
+    lines = [f"# 🎯 串关精选 | {match_date_str}", ""]
+
+    for i, (picks, prob, combo_type) in enumerate(top):
+        size = len(picks)
+        label = labels.get(size, f"{size}串1")
+        tag = ["🥇", "🥈", "🥉"][i]
+        combo_str = " × ".join(f"**{p[0]}**" for p in picks)
+        lines.append(f"### {tag} {label} (综合 `{prob*100:.0f}%`)")
+        lines.append(f"> {combo_str}")
+        lines.append("")
+
+        # Show individual probabilities
+        detail = " | ".join(f"{p[0]} `{p[1]*100:.0f}%`" for p in picks)
+        lines.append(f"明细: {detail}")
+        lines.append("")
+
+    lines.append("> ⚠ 以上由算法生成，仅供参考，理性投注")
+    return "\n".join(lines)
+
+
+def _recurse_combos(pool, indices, depth, current_picks, current_prob, results):
+    """Recursively build combo variations: one pick per match."""
+    if depth == len(indices):
+        results.append((list(current_picks), current_prob, len(indices)))
+        return
+
+    match_picks = pool[indices[depth]]
+    for pick_name, pick_prob in match_picks:
+        _recurse_combos(pool, indices, depth + 1,
+                        current_picks + [(pick_name, pick_prob)],
+                        current_prob * pick_prob, results)
 
 
 def send_wechat_markdown(content):
