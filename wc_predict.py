@@ -564,7 +564,7 @@ def _score_text(scores):
     return "比分: " + " / ".join(parts)
 
 
-def _render_single_image(date_str, f1, c1, f2, c2, group, time_disp, venue, rows_data, font_name):
+def _render_single_image(date_str, c1, c2, group, time_disp, venue, rows_data, font_name):
     """Render one match as a vertical PNG for mobile viewing."""
     fig, ax = plt.subplots(figsize=(6, 8))
     ax.axis("off")
