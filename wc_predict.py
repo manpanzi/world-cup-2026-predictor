@@ -152,6 +152,23 @@ def predict_scores(elo_a, elo_b):
     return result
 
 
+def predict_total_goals(elo_a, elo_b):
+    """Return top 2 total goals predictions from Poisson model."""
+    avg_goals = 1.5
+    exp_g_a = avg_goals * math.exp((elo_a - elo_b) / 400.0 * 0.85)
+    exp_g_b = avg_goals * math.exp((elo_b - elo_a) / 400.0 * 0.85)
+    exp_g_a = max(0.3, min(exp_g_a, 5.0))
+    exp_g_b = max(0.3, min(exp_g_b, 5.0))
+    exp_total = exp_g_a + exp_g_b
+
+    probs = []
+    for tg in range(0, 11):
+        prob = poisson_pmf(exp_total, tg)
+        probs.append((tg, prob))
+    probs.sort(key=lambda x: x[1], reverse=True)
+    return probs[:2]
+
+
 def form_score(form_str):
     points = {"W": 3, "w": 3, "D": 1, "d": 1, "L": 0, "l": 0}
     results = form_str.strip().split("-")
@@ -341,8 +358,9 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False):
         hcaps.append({"line": hcap, "cover": cov, "not_cover": nc, "push": push})
     best_hcap = min(hcaps, key=lambda h: abs(h["cover"] - 0.5))
 
-    # Scores
+    # Scores & total goals
     scores = predict_scores(elo1, elo2)
+    total_goals = predict_total_goals(elo1, elo2)
 
     # Favorite
     if w1 > w2 + 0.05:
@@ -371,6 +389,7 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False):
         "handicaps": hcaps,
         "best_handicap": best_hcap,
         "scores": scores,
+        "total_goals": total_goals,
         "form1": form1_str, "form2": form2_str,
         "form1_score": fs1, "form2_score": fs2,
         "favorite": favorite,
@@ -539,6 +558,7 @@ def render_prediction_image(results, match_date_str):
                 f"{c1}胜 {w1:.0f}%   平 {d:.0f}%   {c2}胜 {w2:.0f}%",
                 _hcap_text(c1, bh),
                 _score_text(r["scores"]),
+                _total_text(r["total_goals"]),
             ]),
         ]
 
@@ -562,6 +582,11 @@ def _hcap_text(c1, bh):
 def _score_text(scores):
     parts = [f"{g[0]}-{g[1]} ({g[2]*100:.1f}%)" for g in scores]
     return "比分: " + " / ".join(parts)
+
+
+def _total_text(total_goals):
+    parts = [f"{tg}球 ({prob*100:.1f}%)" for tg, prob in total_goals]
+    return "总进球: " + " / ".join(parts)
 
 
 def _render_single_image(date_str, c1, c2, group, time_disp, venue, rows_data, font_name):
@@ -789,6 +814,56 @@ def send_wechat_images(images, match_date_str):
         requests.post(WEBHOOK_URL, json=footer, timeout=15)
     except Exception:
         pass
+
+    # Send parlay suggestion as text
+    parlay = generate_parlay(results, match_date_str)
+    if parlay:
+        payload = {"msgtype": "markdown", "markdown": {"content": parlay}}
+        try:
+            r = requests.post(WEBHOOK_URL, json=payload, timeout=15)
+            print(f"  [parlay] {r.json()}")
+        except Exception as e:
+            print(f"  [WARN] parlay: {e}")
+
+
+def generate_parlay(results, match_date_str):
+    """Build a parlay suggestion from analyzed matches."""
+    analyzed = [r for r in results if not r.get("skip")]
+    if len(analyzed) < 2:
+        return None
+
+    picks = []
+    for r in analyzed:
+        c1, c2 = cn(r["team1"]), cn(r["team2"])
+        w1, d, w2 = r["win1"], r["draw"], r["win2"]
+        bh = r["best_handicap"]
+
+        # Pick the strongest signal for each match
+        if w1 >= 0.50:
+            picks.append(f"{c1}胜({w1*100:.0f}%)")
+        elif w2 >= 0.50:
+            picks.append(f"{c2}胜({w2*100:.0f}%)")
+        elif w1 > w2:
+            picks.append(f"{c1}不败(胜平){w1*100+d*100:.0f}%")
+        else:
+            picks.append(f"{c2}不败(胜平){w2*100+d*100:.0f}%")
+
+    if not picks:
+        return None
+
+    combo = " + ".join(picks)
+    total_prob = 1.0
+    for r in analyzed:
+        w1, w2 = r["win1"], r["win2"]
+        total_prob *= max(w1, w2)
+    total_prob *= 100
+
+    return (
+        f"# 🎯 串关建议 | {match_date_str}\n\n"
+        f"> {combo}\n\n"
+        f"综合概率约 `{total_prob:.0f}%`\n\n"
+        f"> ⚠ 仅供参考，理性投注"
+    )
 
 
 def send_wechat_markdown(content):
