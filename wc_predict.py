@@ -43,6 +43,7 @@ WEBHOOK_URL = os.getenv(
 )
 
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
+PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN", "")
 
 CST = timezone(timedelta(hours=8))
 
@@ -1091,6 +1092,81 @@ def _do_send_md(content):
         return False
 
 
+# ---------- PushPlus ----------
+
+
+def format_pushplus(results, parlay_text, match_date_str):
+    """Build compact markdown for PushPlus green WeChat push."""
+    analyzed = [r for r in results if not r.get("skip")]
+    lines = [
+        f"# ⚽ 世界杯预测 | {match_date_str}比赛日",
+        f"共{len(analyzed)}场比赛",
+        "",
+    ]
+    for r in analyzed:
+        c1, c2 = cn(r["team1"]), cn(r["team2"])
+        w1, d, w2 = r["win1"]*100, r["draw"]*100, r["win2"]*100
+        bj, nd = to_beijing_time(r.get("time", ""))
+        lines.append(f"## {flag(r['team1'])} {c1} vs {flag(r['team2'])} {c2}")
+        lines.append(f"> {cn_group(r.get('group',''))} | {bj}北京{' 次日' if nd else ''} | {cn_venue(r.get('ground',''))}")
+        lines.append("")
+        # Data
+        lotto = r.get("lotto", {})
+        lines.append(f"- 竞彩: 胜{lotto.get('home','-')} / 平{lotto.get('draw','-')} / 负{lotto.get('away','-')}")
+        fd1, fd2 = form_to_display(r["form1"]), form_to_display(r["form2"])
+        lines.append(f"- 状态: {c1} {form_summary(r['form1'])} {fd1} | {c2} {form_summary(r['form2'])} {fd2}")
+        lines.append(f"- ELO: {c1} {r['elo1']} vs {c2} {r['elo2']} (差{r['elo1']-r['elo2']:+d})")
+        # Predict
+        lines.append(f"- 胜负: {c1} {w1:.0f}% / 平 {d:.0f}% / {c2} {w2:.0f}%")
+        bh = r["best_handicap"]
+        lines.append(f"- 竞彩让球 {c1}{bh['line']:+d}: 赢盘 {bh['cover']*100:.0f}% / 输盘 {bh['not_cover']*100:.0f}%")
+        sg = r["scores"]
+        lines.append(f"- 比分: {' / '.join(f'{g[0]}-{g[1]} {g[2]*100:.1f}%' for g in sg)}")
+        tg = r["total_goals"]
+        lines.append(f"- 总进球: {' / '.join(f'{g[0]}球 {g[1]*100:.1f}%' for g in tg)}")
+        lines.append("")
+
+    if parlay_text:
+        # Extract just the combo names
+        plines = parlay_text.split("\n")
+        lines.append(f"## 🎯 串关精选")
+        in_combo = False
+        for pl in plines:
+            if pl.startswith("### "):
+                combo_name = pl.replace("### ", "").replace("`", "").strip()
+                lines.append(f"- {combo_name}")
+            elif pl.startswith("> "):
+                lines.append(f"  {pl.replace('> **', '').replace('** ×', ' ×').replace('**', '').strip()}")
+        lines.append("")
+
+    lines.append("> ⚠ 算法生成 · 竞彩赔率为模拟值 · 仅供参考")
+    return "\n".join(lines)
+
+
+def send_pushplus(content, match_date_str):
+    """Push to PushPlus (green WeChat)."""
+    if not PUSHPLUS_TOKEN:
+        return
+    payload = {
+        "token": PUSHPLUS_TOKEN,
+        "title": f"⚽ 世界杯预测 · {match_date_str}",
+        "content": content,
+        "template": "markdown",
+    }
+    try:
+        r = requests.post("https://www.pushplus.plus/send", json=payload, timeout=15)
+        result = r.json()
+        if result.get("code") == 200:
+            print("  [pushplus] OK")
+            return True
+        else:
+            print(f"  [pushplus] {result}")
+            return False
+    except Exception as e:
+        print(f"  [pushplus] ERROR: {e}")
+        return False
+
+
 # ---------- main ----------
 
 
@@ -1166,7 +1242,16 @@ def main():
         return
 
     send_wechat_images(images, results, target_str)
-    print("✅ 推送完成")
+    print("✅ 企业微信推送完成")
+
+    # Also push to PushPlus (green WeChat)
+    if PUSHPLUS_TOKEN:
+        pp_content = format_pushplus(results,
+                                     generate_parlay([r for r in results if not r.get("skip")], target_str),
+                                     target_str)
+        print("\n📤 推送 PushPlus (绿微信)...")
+        send_pushplus(pp_content, target_str)
+    print("✅ 全部推送完成")
 
 
 if __name__ == "__main__":
