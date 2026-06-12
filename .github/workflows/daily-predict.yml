@@ -25,4 +25,5 @@ jobs:
           WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
         run: python wc_predict.py

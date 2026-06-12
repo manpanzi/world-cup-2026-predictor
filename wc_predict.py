@@ -44,6 +44,7 @@ WEBHOOK_URL = os.getenv(
 
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
 PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN", "")
+PUSHPLUS_TOPIC = os.getenv("PUSHPLUS_TOPIC", "")
 
 CST = timezone(timedelta(hours=8))
 
@@ -1153,6 +1154,8 @@ def send_pushplus(content, match_date_str):
         "content": content,
         "template": "markdown",
     }
+    if PUSHPLUS_TOPIC:
+        payload["topic"] = PUSHPLUS_TOPIC
     try:
         r = requests.post("https://www.pushplus.plus/send", json=payload, timeout=15)
         result = r.json()
