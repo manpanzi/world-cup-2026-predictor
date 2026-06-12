@@ -997,9 +997,10 @@ def generate_parlay(results, match_date_str):
 
     all_combos.sort(key=lambda x: x[1], reverse=True)
 
-    # Select top 3: ensure mix of types and one >= 3串
-    top, used_types = [], set()
-    has_big = False
+    # Select top 3: ensure one >= 3串 when possible
+    max_size = max(len(c[0]) for c in all_combos) if all_combos else 2
+    top = []
+    has_big = (max_size < 3)  # if only 2 matches, skip the 3串 requirement
 
     for combo in all_combos:
         picks, prob, total_odds = combo
@@ -1008,7 +1009,7 @@ def generate_parlay(results, match_date_str):
         if len(top) >= 3:
             break
 
-        # Ensure at least one combo has 3+ matches
+        # Ensure at least one combo has 3+ matches (when pool supports it)
         if not has_big and size >= 3:
             top.append(combo)
             has_big = True
