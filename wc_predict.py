@@ -1092,7 +1092,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="World Cup 2026 Prediction Engine")
-    parser.add_argument("--date", help="Target date YYYY-MM-DD (default: tomorrow CST)")
+    parser.add_argument("--date", help="Target date YYYY-MM-DD (default: today CST)")
     parser.add_argument("--dry-run", action="store_true", help="Print only, no WeChat push")
     parser.add_argument("--no-odds", action="store_true", help="Skip odds fetch (faster)")
     args = parser.parse_args()
@@ -1117,7 +1117,7 @@ def main():
         target_str = target_date.strftime("%m月%d日")
     else:
         now_cst = datetime.now(CST)
-        target_date = (now_cst + timedelta(days=1)).date()
+        target_date = (now_cst + timedelta(days=0)).date()
         target_str = target_date.strftime("%m月%d日")
 
     target_matches = [
