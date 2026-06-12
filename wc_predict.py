@@ -377,13 +377,21 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False):
     w2 = max(0.02, min(0.98, w2 - adj))
     d = 1.0 - w1 - w2
 
-    # Handicap
-    handicap_lines = [-0.5, -1.0, -1.5, -2.0]
+    # Handicap — 竞彩格式: 整数让球 only, stronger team gives goals
+    if elo1 >= elo2:
+        handicap_lines = [-1, -2, -3]
+    else:
+        handicap_lines = [1, 2, 3]
     hcaps = []
     for hcap in handicap_lines:
         cov, nc, push = calc_handicap(elo1, elo2, hcap)
         hcaps.append({"line": hcap, "cover": cov, "not_cover": nc, "push": push})
-    best_hcap = min(hcaps, key=lambda h: abs(h["cover"] - 0.5))
+    # Pick handicap closest to 50-50 from valid lines
+    valid = [h for h in hcaps if h["cover"] > 0.30]
+    if valid:
+        best_hcap = min(valid, key=lambda h: abs(h["cover"] - 0.5))
+    else:
+        best_hcap = hcaps[0]
 
     # Scores & total goals
     scores = predict_scores(elo1, elo2)
@@ -606,11 +614,8 @@ def render_prediction_image(results, match_date_str):
 
 
 def _hcap_text(c1, bh, hcap_lotto=None):
-    hcap_line = f"{c1}{bh['line']:+.1f}"
-    base = f"让球 {hcap_line}: 赢盘 {bh['cover']*100:.0f}%"
-    if bh["push"] > 0.01:
-        base += f" / 走水 {bh['push']*100:.0f}%"
-    base += f" / 输盘 {bh['not_cover']*100:.0f}%"
+    hcap_line = f"{c1}{bh['line']:+d}"
+    base = f"竞彩让球 {hcap_line}: 赢盘 {bh['cover']*100:.0f}% / 输盘 {bh['not_cover']*100:.0f}%"
     if hcap_lotto:
         base += f" (赔 {hcap_lotto['cover']}/{hcap_lotto['not_cover']})"
     return base
@@ -971,11 +976,11 @@ def generate_parlay(results, match_date_str):
         else:
             match_picks.append((f"{c2}胜", w2, "胜负", lotto["away"]))
 
-        # Handicap picks with 竞彩 odds
+        # Handicap picks with 竞彩 odds (whole numbers only)
         for h in r["handicaps"]:
             cover_p = h["cover"]
-            if cover_p >= 0.45:
-                tag = f"{c1}{h['line']:+.1f}赢盘"
+            if cover_p >= 0.40:
+                tag = f"{c1}{h['line']:+d}赢盘"
                 hlotto = handicap_lottery_odds(cover_p, h["not_cover"])
                 match_picks.append((tag, cover_p, "让球", hlotto["cover"]))
                 break
