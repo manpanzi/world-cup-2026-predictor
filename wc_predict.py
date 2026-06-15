@@ -1213,21 +1213,23 @@ def generate_parlay(results, match_date_str):
     if len(analyzed) > 4:
         analyzed = analyzed[:4]  # max 4
 
-    # Build all picks per match
+    # Build all picks per match — only include bet types that sporttery.cn has opened
     all_picks = []
     for r in analyzed:
         c1, c2 = cn(r["team1"]), cn(r["team2"])
         w1, w2 = r["win1"], r["win2"]
         lotto = r["lotto"]
+        sp_had = r.get("sp_had")
+        sp_hhad = r.get("sp_hhad")
         match_name = f"{c1}vs{c2}"
         options = []
-        # Win pick
-        if w1 >= w2:
-            options.append((f"{c1}胜", w1, "胜负", lotto["home"], match_name))
-        else:
-            options.append((f"{c2}胜", w2, "胜负", lotto["away"], match_name))
-        # Handicap
-        sp_hhad = r.get("sp_hhad")
+        # Win/Loss pick — only if HAD is open on sporttery
+        if sp_had:
+            if w1 >= w2:
+                options.append((f"{c1}胜", w1, "胜负", sp_had["h"], match_name))
+            else:
+                options.append((f"{c2}胜", w2, "胜负", sp_had["a"], match_name))
+        # Handicap pick — only if HHAD is open on sporttery
         if sp_hhad:
             hline = sp_hhad["line"]
             if hline > 0:
@@ -1236,6 +1238,12 @@ def generate_parlay(results, match_date_str):
             elif hline < 0:
                 options.append((f"{c1}{hline}赢盘", r["best_handicap"]["cover"],
                                "让球", sp_hhad["h"], match_name))
+        # Fallback: if neither open, use ELO-based pick
+        if not sp_had and not sp_hhad:
+            if w1 >= w2:
+                options.append((f"{c1}胜", w1, "ELO", lotto["home"], match_name))
+            else:
+                options.append((f"{c2}胜", w2, "ELO", lotto["away"], match_name))
         all_picks.append(options)
 
     # Enumerate all subsets (size 2, 3, 4) × pick combinations × M串N methods
