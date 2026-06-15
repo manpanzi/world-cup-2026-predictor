@@ -1204,82 +1204,104 @@ def _msn_calc(picks_data, method_name, m):
 
 def generate_parlay(results, match_date_str):
     """
-    Generate top 3 竞彩 M串N parlay recommendations.
-    Uses official SP odds from sporttery.cn, calculates per official rules.
+    Top 3 combinations from ANY subset of 2-4 matches, ALL M串N methods.
+    Ranked by EV ratio (性价比).
     """
     analyzed = [r for r in results if not r.get("skip")]
     if len(analyzed) < 2:
         return None
     if len(analyzed) > 4:
-        analyzed = analyzed[:4]  # max 4 matches
+        analyzed = analyzed[:4]  # max 4
 
-    # Build picks: 1 pick per match (best odds ratio: prob * SP)
-    picks_data = []
+    # Build all picks per match
+    all_picks = []
     for r in analyzed:
         c1, c2 = cn(r["team1"]), cn(r["team2"])
         w1, w2 = r["win1"], r["win2"]
         lotto = r["lotto"]
-        # Best pick per match: highest prob × SP (expected value signal)
-        candidates = []
+        match_name = f"{c1}vs{c2}"
+        options = []
         # Win pick
         if w1 >= w2:
-            candidates.append((f"{c1}胜", w1, "胜负", lotto["home"]))
+            options.append((f"{c1}胜", w1, "胜负", lotto["home"], match_name))
         else:
-            candidates.append((f"{c2}胜", w2, "胜负", lotto["away"]))
-        # Handicap pick from sporttery
+            options.append((f"{c2}胜", w2, "胜负", lotto["away"], match_name))
+        # Handicap
         sp_hhad = r.get("sp_hhad")
         if sp_hhad:
             hline = sp_hhad["line"]
-            if hline > 0:  # team2 is giving goals → pick team2
-                candidates.append((f"{c2}+{hline}赢盘", r["best_handicap"]["cover"],
-                                   "让球", sp_hhad["a"]))
-            elif hline < 0:  # team1 is giving goals → pick team1
-                candidates.append((f"{c1}{hline}赢盘", r["best_handicap"]["cover"],
-                                   "让球", sp_hhad["h"]))
-        # Pick best
-        candidates.sort(key=lambda x: x[1] * x[3], reverse=True)
-        picks_data.append(candidates[0])
+            if hline > 0:
+                options.append((f"{c2}+{hline}赢盘", r["best_handicap"]["cover"],
+                               "让球", sp_hhad["a"], match_name))
+            elif hline < 0:
+                options.append((f"{c1}{hline}赢盘", r["best_handicap"]["cover"],
+                               "让球", sp_hhad["h"], match_name))
+        all_picks.append(options)
 
-    m = len(picks_data)
-    method_list = MSN_METHODS.get(m, {})
-    if not method_list:
+    # Enumerate all subsets (size 2, 3, 4) × pick combinations × M串N methods
+    from itertools import combinations as icombo
+
+    all_results = []
+    for subset_size in range(2, len(all_picks) + 1):
+        for subset_indices in icombo(range(len(all_picks)), subset_size):
+            _eval_subset(all_picks, list(subset_indices), 0, [], all_results)
+
+    if not all_results:
         return None
 
-    # Evaluate all methods
-    results_list = []
-    for method_name in method_list:
-        r = _msn_calc(picks_data, method_name, m)
-        if r:
-            results_list.append(r)
+    all_results.sort(key=lambda x: x["ev_ratio"], reverse=True)
 
-    results_list.sort(key=lambda x: x["ev_ratio"], reverse=True)
-    top = results_list[:3]
+    # Pick top 3, prefer diversity in size
+    seen_sizes = set()
+    top = []
+    for r in all_results:
+        if len(top) >= 3:
+            break
+        size = r["match_count"]
+        if size not in seen_sizes or len(top) >= 1:
+            top.append(r)
+            seen_sizes.add(size)
 
     # Format
+    labels = {2: "2串组合", 3: "3串组合", 4: "4串组合"}
     lines = [f"# 🎯 竞彩串关 | {match_date_str}", ""]
-
-    # Pick summary
-    pick_labels = " × ".join(f"**{p[0]}**" for p in picks_data)
-    lines.append(f"> 选场: {pick_labels}")
-    lines.append("")
 
     for i, r in enumerate(top):
         tags = ["🥇", "🥈", "🥉"]
+        combo_str = " × ".join(f"**{p[0]}**" for p in r["picks"])
+        match_names = " / ".join(sorted(set(p[4] for p in r["picks"])))
         lines.append(
-            f"### {tags[i]} {r['name']} (成本 `{r['cost']}元` / 最高返 `{r['max_return']}元`)"
+            f"### {tags[i]} {r['name']} ({r['match_count']}场)"
         )
-        lines.append(f"> {r['slips']}注 · 期望收益 `{r['expected_return']}元` · EV比 `{r['ev_ratio']}`")
+        lines.append(f"> {combo_str}")
+        lines.append(f"> 场次: {match_names}")
+        lines.append(
+            f"> 成本 `{r['cost']}元` · "
+            f"最高返 `{r['max_return']}元` · "
+            f"EV比 `{r['ev_ratio']}`"
+        )
         lines.append("")
 
-    # Per-pick detail
     lines.append("---")
-    lines.append("**选场明细**:")
-    for p in picks_data:
-        lines.append(f"- {p[0]} [{p[2]}] {p[1]*100:.0f}% @{p[3]}")
-    lines.append("")
-    lines.append("> ⚠ 竞彩M串N官方规则 · 所列为最高理论返奖 · 理性投注")
-
+    lines.append("> ⚠ 竞彩官方M串N规则 · 理论最高返奖 · 理性投注")
     return "\n".join(lines)
+
+
+def _eval_subset(all_picks, indices, depth, current, results):
+    """Recurse over picks for a match subset, then evaluate all M串N methods."""
+    if depth == len(indices):
+        m = len(current)
+        methods = MSN_METHODS.get(m, {})
+        for method_name in methods:
+            r = _msn_calc(current, method_name, m)
+            if r:
+                r["picks"] = list(current)
+                r["match_count"] = m
+                results.append(r)
+        return
+
+    for pick in all_picks[indices[depth]]:
+        _eval_subset(all_picks, indices, depth + 1, current + [pick], results)
 
 
 def send_wechat_markdown(content):
