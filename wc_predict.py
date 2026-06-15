@@ -48,6 +48,30 @@ PUSHPLUS_TOPIC = os.getenv("PUSHPLUS_TOPIC", "")
 
 CST = timezone(timedelta(hours=8))
 
+SPORTTERY_API = "https://webapi.sporttery.cn/gateway/jc/football/getMatchCalculatorV1.qry"
+
+# sporttery.cn team name → our internal name
+SPORTTERY_TEAM_MAP = {
+    "墨西哥": "Mexico", "南非": "South Africa", "韩国": "South Korea",
+    "捷克": "Czech Republic", "加拿大": "Canada", "波黑": "Bosnia & Herzegovina",
+    "卡塔尔": "Qatar", "瑞士": "Switzerland", "巴西": "Brazil", "摩洛哥": "Morocco",
+    "海地": "Haiti", "苏格兰": "Scotland", "美国": "USA",
+    "土耳其": "Turkey", "澳大利亚": "Australia", "巴拉圭": "Paraguay",
+    "德国": "Germany", "厄瓜多尔": "Ecuador", "科特迪瓦": "Ivory Coast",
+    "库拉索": "Curacao", "荷兰": "Netherlands", "日本": "Japan",
+    "瑞典": "Sweden", "突尼斯": "Tunisia", "比利时": "Belgium", "伊朗": "Iran",
+    "埃及": "Egypt", "新西兰": "New Zealand", "西班牙": "Spain",
+    "乌拉圭": "Uruguay", "佛得角": "Cape Verde", "沙特": "Saudi Arabia",
+    "沙特阿拉伯": "Saudi Arabia", "法国": "France", "挪威": "Norway",
+    "塞内加尔": "Senegal", "伊拉克": "Iraq",
+    "阿根廷": "Argentina", "奥地利": "Austria", "约旦": "Jordan",
+    "阿尔及利": "Algeria", "亚": "Algeria",
+    "葡萄牙": "Portugal", "哥伦比亚": "Colombia", "乌兹别克": "Uzbekistan",
+    "乌兹别克斯坦": "Uzbekistan", "刚果": "DR Congo", "刚果(金)": "DR Congo",
+    "英格兰": "England", "克罗地亚": "Croatia",
+    "巴拿马": "Panama", "加纳": "Ghana",
+}
+
 # ---------- data loading ----------
 
 
@@ -71,6 +95,110 @@ def resolve_form(name, elo_data, form_data):
     name_map = elo_data.get("name_map", {})
     resolved = name_map.get(name, name)
     return form_data["forms"].get(resolved, "?-?-?-?-?")
+
+# ---------- sporttery.cn API ----------
+
+
+def fetch_sporttery_odds():
+    """Fetch live 竞彩 SP odds from sporttery.cn. Returns {} on failure."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        "Referer": "https://m.sporttery.cn/",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
+    try:
+        resp = requests.get(SPORTTERY_API,
+                            params={"poolCode": "hhad,had", "channel": "c"},
+                            headers=headers, timeout=10)
+        data = resp.json()
+        matches = data.get("value", {}).get("matchInfoList", [])
+        odds_lookup = {}
+        for day in matches:
+            for sub in day.get("subMatchList", []):
+                key = (sub.get("homeTeamAllName", ""), sub.get("awayTeamAbbName", ""))
+                had_odds = None
+                hhad_odds = None
+                # Check top-level HAD/HHAD objects
+                for pool_code, pool_key in [("HAD", "had"), ("HHAD", "hhad")]:
+                    obj = sub.get(pool_key, {})
+                    if obj and obj.get("h"):
+                        gl_str = obj.get("goalLine", "0")
+                        try:
+                            gl = int(float(gl_str))
+                        except (ValueError, TypeError):
+                            gl = 0
+                        if pool_code == "HAD":
+                            had_odds = {"h": float(obj["h"]), "d": float(obj["d"]),
+                                         "a": float(obj["a"])}
+                        else:
+                            hhad_odds = {"h": float(obj["h"]), "d": float(obj["d"]),
+                                          "a": float(obj["a"]), "line": gl}
+                # Fallback: check oddsList
+                for o in sub.get("oddsList", []):
+                    pc = o.get("poolCode", "")
+                    if pc == "HAD" and had_odds is None:
+                        had_odds = {"h": float(o["h"]), "d": float(o["d"]),
+                                     "a": float(o["a"])}
+                    elif pc == "HHAD" and hhad_odds is None:
+                        gl_str = o.get("goalLine", "0")
+                        try:
+                            gl = int(float(gl_str))
+                        except (ValueError, TypeError):
+                            gl = 0
+                        hhad_odds = {"h": float(o["h"]), "d": float(o["d"]),
+                                      "a": float(o["a"]), "line": gl}
+                match_num = sub.get("matchNum", "")
+                odds_lookup[key] = {"had": had_odds, "hhad": hhad_odds, "num": match_num}
+        return odds_lookup
+    except Exception as e:
+        print(f"  [WARN] sporttery API: {e}")
+        return {}
+
+
+def resolve_sporttery_team(name_en):
+    """Reverse-map our internal team name to sporttery.cn Chinese name."""
+    for cn_name, en_name in SPORTTERY_TEAM_MAP.items():
+        if en_name == name_en:
+            return cn_name
+    return None
+
+
+# ---------- 24h time window ----------
+
+
+def get_matches_in_window(all_matches):
+    """
+    Return matches whose Beijing kickoff falls in [today 21:00 CST, tomorrow 21:00 CST].
+    """
+    now_cst = datetime.now(CST)
+    today_21 = now_cst.replace(hour=21, minute=0, second=0, microsecond=0)
+    if now_cst < today_21:
+        window_start = today_21
+    else:
+        window_start = today_21 + timedelta(days=1)
+    window_end = window_start + timedelta(hours=24)
+
+    # Calculate match_date_str for display
+    if window_start.date() == window_end.date():
+        match_date_str = window_start.strftime("%m月%d日")
+    else:
+        match_date_str = (f"{window_start.strftime('%m月%d日')}~"
+                          f"{window_end.strftime('%m月%d日')}")
+
+    result = []
+    for m in all_matches:
+        bj_time, _ = to_beijing_time(m.get("time", ""))
+        hh, mm = map(int, bj_time.split(":"))
+        match_date_local = datetime.strptime(m["date"], "%Y-%m-%d").date()
+        match_dt_cst = datetime(match_date_local.year, match_date_local.month,
+                                match_date_local.day, hh, mm, tzinfo=CST)
+        if window_start <= match_dt_cst < window_end:
+            result.append(m)
+
+    return result, match_date_str
+
 
 # ---------- Beijing time ----------
 
@@ -349,8 +477,8 @@ def odds_summary(odds, elo1, elo2):
 # ---------- analysis pipeline ----------
 
 
-def analyze_match(match, elo_data, form_data, fetch_odds=False):
-    """Full analysis for a single match."""
+def analyze_match(match, elo_data, form_data, fetch_odds=False, sp_odds=None):
+    """Full analysis for a single match, blending market SP odds with ELO."""
     team1 = match["team1"]
     team2 = match["team2"]
 
@@ -368,32 +496,71 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False):
     form1_str = resolve_form(team1, elo_data, form_data)
     form2_str = resolve_form(team2, elo_data, form_data)
 
-    # Win/draw/loss
-    w1, d, w2 = calc_match_probabilities(elo1, elo2)
-
-    # Form momentum adjustment
+    # --- ELO-based probabilities ---
+    e_w1, e_d, e_w2 = calc_match_probabilities(elo1, elo2)
     fs1 = form_score(form1_str)
     fs2 = form_score(form2_str)
     adj = (fs1 - fs2) * 0.012
-    w1 = max(0.02, min(0.98, w1 + adj))
-    w2 = max(0.02, min(0.98, w2 - adj))
-    d = 1.0 - w1 - w2
+    e_w1 = max(0.02, min(0.98, e_w1 + adj))
+    e_w2 = max(0.02, min(0.98, e_w2 - adj))
+    e_d = 1.0 - e_w1 - e_w2
 
-    # Handicap — 竞彩格式: 整数让球 only, stronger team gives goals
-    if elo1 >= elo2:
-        handicap_lines = [-1, -2, -3]
+    # --- Market SP odds (from sporttery.cn) ---
+    sp_had = None
+    sp_hhad = None
+    if sp_odds:
+        t1_cn = resolve_sporttery_team(team1)
+        t2_cn = resolve_sporttery_team(team2)
+        key = (t1_cn, t2_cn) if t1_cn and t2_cn else None
+        if key and key in sp_odds:
+            sp_had = sp_odds[key].get("had")
+            sp_hhad = sp_odds[key].get("hhad")
+
+    # Blended probability: 70% market, 30% ELO
+    if sp_had:
+        inv_sum = 1.0 / sp_had["h"] + 1.0 / sp_had["d"] + 1.0 / sp_had["a"]
+        m_w1 = (1.0 / sp_had["h"]) / inv_sum
+        m_d = (1.0 / sp_had["d"]) / inv_sum
+        m_w2 = (1.0 / sp_had["a"]) / inv_sum
+        w1 = m_w1 * 0.70 + e_w1 * 0.30
+        d = m_d * 0.70 + e_d * 0.30
+        w2 = m_w2 * 0.70 + e_w2 * 0.30
+        odds_source = "竞彩官方"
     else:
-        handicap_lines = [1, 2, 3]
-    hcaps = []
-    for hcap in handicap_lines:
-        cov, nc, push = calc_handicap(elo1, elo2, hcap)
-        hcaps.append({"line": hcap, "cover": cov, "not_cover": nc, "push": push})
-    # Pick handicap closest to 50-50 from valid lines
-    valid = [h for h in hcaps if h["cover"] > 0.30]
-    if valid:
-        best_hcap = min(valid, key=lambda h: abs(h["cover"] - 0.5))
-    else:
+        w1, d, w2 = e_w1, e_d, e_w2
+        odds_source = "ELO隐含"
+
+    # --- Handicap: use sporttery HHAD if available ---
+    if sp_hhad and sp_hhad["line"] != 0:
+        # Use official 竞彩 handicap line
+        official_line = sp_hhad["line"]
+        cov, nc, push = calc_handicap(elo1, elo2, official_line)
+        hcaps = [{"line": official_line, "cover": cov, "not_cover": nc, "push": push}]
         best_hcap = hcaps[0]
+        # HHAD SP implied probabilities
+        inv_sum_hh = 1.0/sp_hhad["h"] + 1.0/sp_hhad["d"] + 1.0/sp_hhad["a"]
+        mh_cover = (1.0/sp_hhad["h"]) / inv_sum_hh
+        mh_not = (1.0/sp_hhad["a"]) / inv_sum_hh
+        if cov > 0 and mh_cover > 0:
+            cov = cov * 0.5 + mh_cover * 0.5
+            nc = 1.0 - cov - push if push > 0 else 1.0 - cov
+            hcaps[0] = {"line": official_line, "cover": cov, "not_cover": nc, "push": push}
+            best_hcap = hcaps[0]
+    else:
+        # Fallback: ELO-based handicap
+        if elo1 >= elo2:
+            handicap_lines = [-1, -2, -3]
+        else:
+            handicap_lines = [1, 2, 3]
+        hcaps = []
+        for hlin in handicap_lines:
+            cov, nc, push = calc_handicap(elo1, elo2, hlin)
+            hcaps.append({"line": hlin, "cover": cov, "not_cover": nc, "push": push})
+        valid = [h for h in hcaps if h["cover"] > 0.30]
+        if valid:
+            best_hcap = min(valid, key=lambda h: abs(h["cover"] - 0.5))
+        else:
+            best_hcap = hcaps[0]
 
     # Scores & total goals
     scores = predict_scores(elo1, elo2)
@@ -409,14 +576,25 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False):
     else:
         favorite = None
 
-    # Live odds
+    # Live odds from the-odds-api
     odds = None
     if fetch_odds:
         odds = fetch_live_odds(team1, team2, elo1, elo2)
 
-    # Lottery odds (竞彩)
-    lotto = lottery_odds(elo1, elo2, w1, d, w2)
-    best_hcap_lotto = handicap_lottery_odds(best_hcap["cover"], best_hcap["not_cover"])
+    # Lottery odds — use sporttery SP if available, else ELO estimate
+    if sp_had:
+        lotto = {"home": sp_had["h"], "draw": sp_had["d"], "away": sp_had["a"]}
+    else:
+        lotto = lottery_odds(elo1, elo2, w1, d, w2)
+
+    if sp_hhad:
+        inv_hh = 1.0/sp_hhad["h"] + 1.0/sp_hhad["d"] + 1.0/sp_hhad["a"]
+        best_hcap_lotto = {
+            "cover": round(1.0/(1.0/sp_hhad["h"]/inv_hh) * 0.88, 2),
+            "not_cover": round(1.0/(1.0/sp_hhad["a"]/inv_hh) * 0.88, 2)
+        }
+    else:
+        best_hcap_lotto = handicap_lottery_odds(best_hcap["cover"], best_hcap["not_cover"])
 
     return {
         "skip": False,
@@ -429,8 +607,6 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False):
         "win1": w1, "draw": d, "win2": w2,
         "handicaps": hcaps,
         "best_handicap": best_hcap,
-        "lotto": lotto,
-        "hcap_lotto": best_hcap_lotto,
         "scores": scores,
         "total_goals": total_goals,
         "form1": form1_str, "form2": form2_str,
@@ -438,7 +614,13 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False):
         "favorite": favorite,
         "fav_pct": fav_pct if favorite else 0,
         "odds": odds,
+        "lotto": lotto,
+        "hcap_lotto": best_hcap_lotto,
+        "odds_source": odds_source,
+        "sp_had": sp_had,
+        "sp_hhad": sp_hhad,
     }
+
 
 
 # ---------- WeChat formatting ----------
@@ -592,7 +774,7 @@ def render_prediction_image(results, match_date_str):
         rows_data = [
             # (section, rows...)
             ("[ DATA 数据 ]", [
-                f"竞彩: 胜{r['lotto']['home']} / 平{r['lotto']['draw']} / 负{r['lotto']['away']}",
+                f"竞彩SP: {r.get('odds_source', '')} 胜{r['lotto']['home']} / 平{r['lotto']['draw']} / 负{r['lotto']['away']}",
                 f"状态: {c1} {fs1}({fd1})",
                 f"      {c2} {fs2}({fd2})",
                 f"ELO:  {c1} {r['elo1']} vs {c2} {r['elo2']} (差{r['elo1']-r['elo2']:+d})",
@@ -957,112 +1139,147 @@ def send_wechat_images(images, results, match_date_str):
                 print(f"  [WARN] parlay image: {e}")
 
 
+# ---------- M串N definitions ----------
+
+MSN_METHODS = {
+    2: {"2串1": [(2, 1)]},  # 1 slip of 2-match
+    3: {
+        "3串1": [(3, 1)],
+        "3串3": [(2, 3)],
+        "3串4": [(2, 3), (3, 1)],
+    },
+    4: {
+        "4串1": [(4, 1)],
+        "4串4": [(3, 4)],
+        "4串5": [(3, 4), (4, 1)],
+        "4串6": [(2, 6)],
+        "4串11": [(2, 6), (3, 4), (4, 1)],
+    },
+}
+
+
+def _msn_calc(picks_data, method_name, m):
+    """
+    Calculate M串N parlay: cost, max_return, and expected return.
+    picks_data: list of (label, win_prob, type, sp_odds)
+    Returns dict with method details.
+    """
+    methods = MSN_METHODS.get(m, {})
+    if method_name not in methods:
+        return None
+
+    slip_defs = methods[method_name]
+    total_slips = sum(s[1] for s in slip_defs)
+
+    # Each slip costs 2 yuan
+    cost = total_slips * 2
+
+    # Calculate payout for each possible outcome
+    from itertools import combinations as combos_slip
+
+    max_return = 0.0
+    expected_return = 0.0
+
+    # For each slip definition (combo_size, count)
+    for combo_size, count in slip_defs:
+        for indices in combos_slip(range(m), combo_size):
+            slip_odds = 1.0
+            slip_prob = 1.0
+            for idx in indices:
+                slip_odds *= picks_data[idx][3]  # SP odds
+                slip_prob *= picks_data[idx][1]   # win probability
+            slip_payout = 2 * slip_odds
+            max_return += slip_payout
+            expected_return += slip_payout * slip_prob
+
+    return {
+        "name": method_name,
+        "slips": total_slips,
+        "cost": cost,
+        "max_return": round(max_return, 2),
+        "expected_return": round(expected_return, 2),
+        "ev_ratio": round(expected_return / cost, 2) if cost > 0 else 0,
+    }
+
+
 def generate_parlay(results, match_date_str):
-    """Build top 3 parlay combos, mixing win/loss and handicap picks. Includes 竞彩赔率."""
+    """
+    Generate top 3 竞彩 M串N parlay recommendations.
+    Uses official SP odds from sporttery.cn, calculates per official rules.
+    """
     analyzed = [r for r in results if not r.get("skip")]
     if len(analyzed) < 2:
         return None
+    if len(analyzed) > 4:
+        analyzed = analyzed[:4]  # max 4 matches
 
-    # Build pick pool: each match contributes win AND handicap options + lottery odds
-    pool = []  # picks = [(label, prob, type, lotto_odds)]
+    # Build picks: 1 pick per match (best odds ratio: prob * SP)
+    picks_data = []
     for r in analyzed:
         c1, c2 = cn(r["team1"]), cn(r["team2"])
-        w1, d, w2 = r["win1"], r["draw"], r["win2"]
+        w1, w2 = r["win1"], r["win2"]
         lotto = r["lotto"]
-        hcap_lotto = r.get("hcap_lotto", {})
-
-        match_picks = []
-        # Win/Loss pick for the favorite side, with 竞彩 odds
+        # Best pick per match: highest prob × SP (expected value signal)
+        candidates = []
+        # Win pick
         if w1 >= w2:
-            match_picks.append((f"{c1}胜", w1, "胜负", lotto["home"]))
+            candidates.append((f"{c1}胜", w1, "胜负", lotto["home"]))
         else:
-            match_picks.append((f"{c2}胜", w2, "胜负", lotto["away"]))
+            candidates.append((f"{c2}胜", w2, "胜负", lotto["away"]))
+        # Handicap pick from sporttery
+        sp_hhad = r.get("sp_hhad")
+        if sp_hhad:
+            hline = sp_hhad["line"]
+            if hline > 0:  # team2 is giving goals → pick team2
+                candidates.append((f"{c2}+{hline}赢盘", r["best_handicap"]["cover"],
+                                   "让球", sp_hhad["a"]))
+            elif hline < 0:  # team1 is giving goals → pick team1
+                candidates.append((f"{c1}{hline}赢盘", r["best_handicap"]["cover"],
+                                   "让球", sp_hhad["h"]))
+        # Pick best
+        candidates.sort(key=lambda x: x[1] * x[3], reverse=True)
+        picks_data.append(candidates[0])
 
-        # Handicap picks with 竞彩 odds (whole numbers only)
-        for h in r["handicaps"]:
-            cover_p = h["cover"]
-            if cover_p >= 0.40:
-                tag = f"{c1}{h['line']:+d}赢盘"
-                hlotto = handicap_lottery_odds(cover_p, h["not_cover"])
-                match_picks.append((tag, cover_p, "让球", hlotto["cover"]))
-                break
-
-        if match_picks:
-            pool.append((c1, match_picks))
-
-    if len(pool) < 2:
+    m = len(picks_data)
+    method_list = MSN_METHODS.get(m, {})
+    if not method_list:
         return None
 
-    # Generate all combos
-    all_combos = []
-    for size in range(2, min(len(pool) + 1, 6)):
-        for indices in combinations(range(len(pool)), size):
-            _recurse_combos_v2(pool, indices, 0, [], 1.0, all_combos)
+    # Evaluate all methods
+    results_list = []
+    for method_name in method_list:
+        r = _msn_calc(picks_data, method_name, m)
+        if r:
+            results_list.append(r)
 
-    if not all_combos:
-        return None
-
-    all_combos.sort(key=lambda x: x[1], reverse=True)
-
-    # Select top 3: ensure one >= 3串 when possible
-    max_size = max(len(c[0]) for c in all_combos) if all_combos else 2
-    top = []
-    has_big = (max_size < 3)  # if only 2 matches, skip the 3串 requirement
-
-    for combo in all_combos:
-        picks, prob, total_odds = combo
-        size = len(picks)
-
-        if len(top) >= 3:
-            break
-
-        # Ensure at least one combo has 3+ matches (when pool supports it)
-        if not has_big and size >= 3:
-            top.append(combo)
-            has_big = True
-            continue
-
-        if has_big and len(top) < 3:
-            top.append(combo)
+    results_list.sort(key=lambda x: x["ev_ratio"], reverse=True)
+    top = results_list[:3]
 
     # Format
-    labels = {2: "2串1", 3: "3串1", 4: "4串1", 5: "5串1"}
-    lines = [f"# 🎯 串关精选 | {match_date_str}", ""]
+    lines = [f"# 🎯 竞彩串关 | {match_date_str}", ""]
 
-    for i, (picks, prob, total_odds) in enumerate(top):
-        size = len(picks)
-        label = labels.get(size, f"{size}串1")
-        tags = ["[1st]", "[2nd]", "[3rd]"]
-        combo_str = " × ".join(f"**{p[0]}**" for p in picks)
+    # Pick summary
+    pick_labels = " × ".join(f"**{p[0]}**" for p in picks_data)
+    lines.append(f"> 选场: {pick_labels}")
+    lines.append("")
+
+    for i, r in enumerate(top):
+        tags = ["🥇", "🥈", "🥉"]
         lines.append(
-            f"### {tags[i]} {label} (胜率 `{prob*100:.0f}%` / 总赔率 `{total_odds}`)"
+            f"### {tags[i]} {r['name']} (成本 `{r['cost']}元` / 最高返 `{r['max_return']}元`)"
         )
-        lines.append(f"> {combo_str}")
-        lines.append("")
-        detail = " | ".join(
-            f"{p[0]} [{p[2]}] {p[1]*100:.0f}% @{p[3]}" for p in picks
-        )
-        lines.append(f"明细: {detail}")
+        lines.append(f"> {r['slips']}注 · 期望收益 `{r['expected_return']}元` · EV比 `{r['ev_ratio']}`")
         lines.append("")
 
-    lines.append("> ⚠ 以上由算法生成，仅供参考，理性投注")
+    # Per-pick detail
+    lines.append("---")
+    lines.append("**选场明细**:")
+    for p in picks_data:
+        lines.append(f"- {p[0]} [{p[2]}] {p[1]*100:.0f}% @{p[3]}")
+    lines.append("")
+    lines.append("> ⚠ 竞彩M串N官方规则 · 所列为最高理论返奖 · 理性投注")
+
     return "\n".join(lines)
-
-
-def _recurse_combos_v2(pool, indices, depth, current_picks, current_prob, results):
-    """Recursively build combo variations, preserving pick type and lottery odds."""
-    if depth == len(indices):
-        total_odds = 1.0
-        for p in current_picks:
-            total_odds *= p[3]  # lottery odds
-        results.append((list(current_picks), current_prob, round(total_odds, 2)))
-        return
-
-    _, match_picks = pool[indices[depth]]
-    for pick_name, pick_prob, pick_type, lotto_odds in match_picks:
-        _recurse_combos_v2(pool, indices, depth + 1,
-                           current_picks + [(pick_name, pick_prob, pick_type, lotto_odds)],
-                           current_prob * pick_prob, results)
 
 
 def send_wechat_markdown(content):
@@ -1183,38 +1400,34 @@ def main():
     args = parser.parse_args()
 
     print("=" * 56)
-    print("  ⚽ World Cup 2026 Prediction Engine")
+    print("  ⚽ World Cup 2026 Prediction Engine v2")
     print("=" * 56)
 
     all_matches, elo_data, form_data = load_data()
     print(f"[数据] {len(all_matches)}场比赛, "
-          f"{len(elo_data['teams'])}队ELO, "
-          f"{len(form_data['forms'])}条状态")
+          f"{len(elo_data['teams'])}队ELO")
 
-    if ODDS_API_KEY:
-        print(f"[赔率] 实时赔率已启用 (the-odds-api)")
-    else:
-        print(f"[赔率] 使用ELO隐含赔率 (设置ODDS_API_KEY启用实时)")
+    # Fetch live 竞彩 SP odds from sporttery.cn
+    print(f"[竞彩] 获取官方SP赔率...")
+    sp_odds = fetch_sporttery_odds()
+    print(f"[竞彩] 获取到 {len(sp_odds)} 场赔率数据")
 
-    # Determine target date
+    # Determine target matches
     if args.date:
         target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
         target_str = target_date.strftime("%m月%d日")
+        target_matches = [
+            m for m in all_matches
+            if m.get("date") == target_date.strftime("%Y-%m-%d")
+        ]
     else:
-        now_cst = datetime.now(CST)
-        target_date = (now_cst + timedelta(days=0)).date()
-        target_str = target_date.strftime("%m月%d日")
-
-    target_matches = [
-        m for m in all_matches
-        if m.get("date") == target_date.strftime("%Y-%m-%d")
-    ]
+        target_matches, target_str = get_matches_in_window(all_matches)
 
     if not target_matches:
         print(f"\n[信息] {target_str} 无比赛安排，跳过")
         return
 
-    print(f"\n[赛程] {target_str} 共 {len(target_matches)} 场比赛")
+    print(f"\n[赛程] {target_str} 共 {len(target_matches)} 场比赛 (21:00→21:00窗口)")
 
     fetch_odds = not args.no_odds
     results = []
@@ -1223,7 +1436,8 @@ def main():
         c1, c2 = cn(t1), cn(t2)
         bj_time, nd = to_beijing_time(m.get("time", ""))
         print(f"\n[分析] {c1} vs {c2} ({bj_time} 北京)")
-        result = analyze_match(m, elo_data, form_data, fetch_odds=fetch_odds)
+        result = analyze_match(m, elo_data, form_data, fetch_odds=fetch_odds,
+                               sp_odds=sp_odds)
         results.append(result)
         if result.get("skip"):
             print(f"  ⏭ {result['reason']}")
