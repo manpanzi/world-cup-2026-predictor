@@ -170,14 +170,14 @@ def resolve_sporttery_team(name_en):
 
 def get_matches_in_window(all_matches):
     """
-    Return matches whose Beijing kickoff falls in [today 21:00 CST, tomorrow 21:00 CST].
+    Return matches whose Beijing kickoff falls in [yesterday 21:00 CST, today 21:00 CST].
     """
     now_cst = datetime.now(CST)
-    today_21 = now_cst.replace(hour=21, minute=0, second=0, microsecond=0)
-    if now_cst < today_21:
-        window_start = today_21
-    else:
-        window_start = today_21 + timedelta(days=1)
+    yesterday = (now_cst - timedelta(days=1)).date()
+    window_start = datetime(yesterday.year, yesterday.month, yesterday.day,
+                            21, 0, 0, tzinfo=CST)
+    if now_cst >= window_start + timedelta(hours=24):
+        window_start = window_start + timedelta(days=1)  # if past today's 21:00, use today
     window_end = window_start + timedelta(hours=24)
 
     # Calculate match_date_str for display
