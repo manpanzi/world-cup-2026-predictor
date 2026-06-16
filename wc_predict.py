@@ -1445,11 +1445,22 @@ def main():
     # Determine target matches
     if args.date:
         target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
-        target_str = target_date.strftime("%m月%d日")
-        target_matches = [
-            m for m in all_matches
-            if m.get("date") == target_date.strftime("%Y-%m-%d")
-        ]
+        window_start = datetime(target_date.year, target_date.month, target_date.day,
+                                21, 0, 0, tzinfo=CST)
+        window_end = window_start + timedelta(hours=24)
+        target_matches = []
+        for m in all_matches:
+            bj_time, _ = to_beijing_time(m.get("time", ""))
+            hh, mm = map(int, bj_time.split(":"))
+            md = datetime.strptime(m["date"], "%Y-%m-%d").date()
+            mdt = datetime(md.year, md.month, md.day, hh, mm, tzinfo=CST)
+            if window_start <= mdt < window_end:
+                target_matches.append(m)
+        if window_start.date() == window_end.date():
+            target_str = window_start.strftime("%m月%d日")
+        else:
+            target_str = (f"{window_start.strftime('%m月%d日')}~"
+                          f"{window_end.strftime('%m月%d日')}")
     else:
         target_matches, target_str = get_matches_in_window(all_matches)
 
