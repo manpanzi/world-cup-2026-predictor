@@ -782,7 +782,7 @@ def render_prediction_image(results, match_date_str):
             ]),
             ("[ PREDICT 预测 ]", [
                 f"{c1}胜 {w1:.0f}%   平 {d:.0f}%   {c2}胜 {w2:.0f}%",
-                _hcap_text(c1, bh, r.get("hcap_lotto")),
+                _asian_analysis(r),
                 _score_text(r["scores"]),
                 _total_text(r["total_goals"]),
             ]),
@@ -825,6 +825,43 @@ def _market_odds_line(r):
         h = al.get("home") or "?"
         parts.append(f"亚盘 {al['line']:+.1f} 赔{h}")
     return "市场: " + " | ".join(parts) if parts else ""
+
+
+def _asian_analysis(r):
+    """Analyze Asian handicap: compare market line with model fair line."""
+    odds = r.get("odds")
+    bh = r.get("best_handicap")
+    if not bh:
+        return ""
+    c1 = cn(r["team1"])
+    c2 = cn(r["team2"])
+    fair_line = bh["line"]
+    cover_p = bh["cover"]
+    not_p = bh["not_cover"]
+    push_p = bh.get("push", 0)
+
+    # Market line from API
+    market_line = None
+    if odds and odds.get("asian") and odds["asian"].get("line") is not None:
+        market_line = odds["asian"]["line"]
+
+    # Recommendation
+    if cover_p > not_p + 0.10:
+        pick = "上盘" if fair_line < 0 else "下盘"
+        team = c1 if fair_line < 0 else c2
+        conf = "强推" if cover_p > 0.60 else "看好"
+        base = f"亚盘 {conf}: {team} {fair_line:+d} 赢盘 ({cover_p*100:.0f}%)"
+    elif not_p > cover_p + 0.10:
+        pick = "下盘" if fair_line < 0 else "上盘"
+        team = c2 if fair_line < 0 else c1
+        conf = "强推" if not_p > 0.60 else "看好"
+        base = f"亚盘 {conf}: {team} 受让赢盘 ({not_p*100:.0f}%)"
+    else:
+        base = f"亚盘 观望: 盘口接近均衡"
+
+    if market_line and market_line != fair_line:
+        base += f" (市场{market_line:+.1f})"
+    return base
 
 
 def _total_text(total_goals):
@@ -1386,8 +1423,9 @@ def format_pushplus(results, parlay_text, match_date_str):
         lines.append(f"- ELO: {c1} {r['elo1']} vs {c2} {r['elo2']} (差{r['elo1']-r['elo2']:+d})")
         # Predict
         lines.append(f"- 胜负: {c1} {w1:.0f}% / 平 {d:.0f}% / {c2} {w2:.0f}%")
-        bh = r["best_handicap"]
-        lines.append(f"- 竞彩让球 {c1}{bh['line']:+d}: 赢盘 {bh['cover']*100:.0f}% / 输盘 {bh['not_cover']*100:.0f}%")
+        aa = _asian_analysis(r)
+        if aa:
+            lines.append(f"- {aa}")
         sg = r["scores"]
         lines.append(f"- 比分: {' / '.join(f'{g[0]}-{g[1]} {g[2]*100:.1f}%' for g in sg)}")
         tg = r["total_goals"]
