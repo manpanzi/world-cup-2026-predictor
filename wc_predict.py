@@ -774,7 +774,8 @@ def render_prediction_image(results, match_date_str):
         rows_data = [
             # (section, rows...)
             ("[ DATA 数据 ]", [
-                f"竞彩SP: {r.get('odds_source', '')} 胜{r['lotto']['home']} / 平{r['lotto']['draw']} / 负{r['lotto']['away']}",
+                f"竞彩: 胜{r['lotto']['home']} / 平{r['lotto']['draw']} / 负{r['lotto']['away']}",
+                _market_odds_line(r),
                 f"状态: {c1} {fs1}({fd1})",
                 f"      {c2} {fs2}({fd2})",
                 f"ELO:  {c1} {r['elo1']} vs {c2} {r['elo2']} (差{r['elo1']-r['elo2']:+d})",
@@ -808,6 +809,22 @@ def _hcap_text(c1, bh, hcap_lotto=None):
 def _score_text(scores):
     parts = [f"{g[0]}-{g[1]} ({g[2]*100:.1f}%)" for g in scores]
     return "比分: " + " / ".join(parts)
+
+
+def _market_odds_line(r):
+    """Build 欧盘/亚盘 combined display line from market odds."""
+    odds = r.get("odds")
+    if not odds or odds.get("source") != "live":
+        return ""
+    eu = odds.get("european", {})
+    al = odds.get("asian", {})
+    parts = []
+    if eu.get("home"):
+        parts.append(f"欧盘 {eu['home']}/{eu['draw']}/{eu['away']}")
+    if al and al.get("line") is not None:
+        h = al.get("home") or "?"
+        parts.append(f"亚盘 {al['line']:+.1f} 赔{h}")
+    return "市场: " + " | ".join(parts) if parts else ""
 
 
 def _total_text(total_goals):
@@ -1470,7 +1487,7 @@ def main():
 
     print(f"\n[赛程] {target_str} 共 {len(target_matches)} 场比赛 (21:00→21:00窗口)")
 
-    fetch_odds = not args.no_odds
+    fetch_odds = not args.no_odds or True  # always fetch for display
     results = []
     for m in target_matches:
         t1, t2 = m["team1"], m["team2"]
