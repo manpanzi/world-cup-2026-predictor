@@ -1378,6 +1378,9 @@ def format_pushplus(results, parlay_text, match_date_str):
         # Data
         lotto = r.get("lotto", {})
         lines.append(f"- 竞彩: 胜{lotto.get('home','-')} / 平{lotto.get('draw','-')} / 负{lotto.get('away','-')}")
+        mkt = _market_odds_line(r)
+        if mkt:
+            lines.append(f"- {mkt}")
         fd1, fd2 = form_to_display(r["form1"]), form_to_display(r["form2"])
         lines.append(f"- 状态: {c1} {form_summary(r['form1'])} {fd1} | {c2} {form_summary(r['form2'])} {fd2}")
         lines.append(f"- ELO: {c1} {r['elo1']} vs {c2} {r['elo2']} (差{r['elo1']-r['elo2']:+d})")
