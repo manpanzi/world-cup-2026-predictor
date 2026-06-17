@@ -516,19 +516,43 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False, sp_odds=None):
             sp_had = sp_odds[key].get("had")
             sp_hhad = sp_odds[key].get("hhad")
 
-    # Blended probability: 70% market, 30% ELO
+    # Blended probability with calibrated draw model
+    gap = abs(elo1 - elo2)
     if sp_had:
+        # Market odds for direction, calibrated draw from ELO gap
         inv_sum = 1.0 / sp_had["h"] + 1.0 / sp_had["d"] + 1.0 / sp_had["a"]
         m_w1 = (1.0 / sp_had["h"]) / inv_sum
-        m_d = (1.0 / sp_had["d"]) / inv_sum
         m_w2 = (1.0 / sp_had["a"]) / inv_sum
-        w1 = m_w1 * 0.70 + e_w1 * 0.30
-        d = m_d * 0.70 + e_d * 0.30
-        w2 = m_w2 * 0.70 + e_w2 * 0.30
-        odds_source = "竞彩官方"
+        # Calibrated draw: World Cup group stage ~25-30%, based on ELO gap
+        if gap < 50:
+            d = 0.26
+        elif gap < 100:
+            d = 0.24
+        elif gap < 150:
+            d = 0.21
+        elif gap < 200:
+            d = 0.18
+        elif gap < 300:
+            d = 0.14
+        else:
+            d = 0.08
+        # Allocate win/loss proportionally to market odds
+        total_nodraw = m_w1 + m_w2
+        w1 = m_w1 / total_nodraw * (1 - d) if total_nodraw > 0 else (1 - d) / 2
+        w2 = 1 - d - w1
+        odds_source = "竞彩+校准"
     else:
         w1, d, w2 = e_w1, e_d, e_w2
-        odds_source = "ELO隐含"
+        # Boost draw for ELO-only mode too
+        if gap < 50: d = max(d, 0.26)
+        elif gap < 100: d = max(d, 0.24)
+        elif gap < 150: d = max(d, 0.21)
+        elif gap < 200: d = max(d, 0.18)
+        elif gap < 300: d = max(d, 0.14)
+        else: d = max(d, 0.08)
+        total = w1 + d + w2
+        w1, d, w2 = w1/total, d/total, w2/total
+        odds_source = "ELO+校准"
 
     # --- Handicap: use sporttery HHAD if available ---
     if sp_hhad and sp_hhad["line"] != 0:
