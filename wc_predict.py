@@ -37,10 +37,7 @@ MATCHES_FILE = os.path.join(DATA_DIR, "worldcup_raw.json")
 ELO_FILE = os.path.join(DATA_DIR, "elo_ratings.json")
 FORM_FILE = os.path.join(DATA_DIR, "recent_form.json")
 
-WEBHOOK_URL = os.getenv(
-    "WECHAT_WEBHOOK_URL",
-    "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=bce95ffc-b9c3-482f-bd15-1c764f4c7892",
-)
+WEBHOOK_URL = os.getenv("WECHAT_WEBHOOK_URL", "")
 
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
 PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN", "")
