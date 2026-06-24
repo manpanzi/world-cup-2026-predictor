@@ -928,12 +928,23 @@ def render_prediction_image(results, match_date_str):
     return images
 
 
-def _hcap_text(c1, bh, hcap_lotto=None):
-    hcap_line = f"{c1}{bh['line']:+d}"
-    base = f"竞彩让球 {hcap_line}: 赢盘 {bh['cover']*100:.0f}% / 输盘 {bh['not_cover']*100:.0f}%"
-    if hcap_lotto:
-        base += f" (赔 {hcap_lotto['cover']}/{hcap_lotto['not_cover']})"
-    return base
+def _hcap_text(r):
+    """竞彩让球推荐 (官方HHAD: 让球胜/平/负)."""
+    sp_hhad = r.get("sp_hhad")
+    c1 = cn(r["team1"])
+    if sp_hhad:
+        hline = sp_hhad["line"]
+        hh, hd, ha = sp_hhad["h"], sp_hhad["d"], sp_hhad["a"]
+        # 竞彩只卖: 让球胜/让球平/让球负 (都是主队视角)
+        picks = {"让球胜": (hh, 1/hh), "让球平": (hd, 1/hd), "让球负": (ha, 1/ha)}
+        best = max(picks, key=lambda k: picks[k][1])  # highest implied prob
+        return f"让球 {c1}{hline:+d}: 推荐{best} (赔{hh}/{hd}/{ha})"
+    else:
+        bh = r["best_handicap"]
+        if bh["cover"] > bh["not_cover"]:
+            return f"让球 {c1}{bh['line']:+d}: 推荐让球胜 ({bh['cover']*100:.0f}%)"
+        else:
+            return f"让球 {c1}{bh['line']:+d}: 推荐让球负 ({bh['not_cover']*100:.0f}%)"
 
 
 def _score_text(scores):
@@ -971,40 +982,8 @@ def _upset_line(r):
 
 
 def _asian_analysis(r):
-    """Analyze Asian handicap: compare market line with model fair line."""
-    odds = r.get("odds")
-    bh = r.get("best_handicap")
-    if not bh:
-        return ""
-    c1 = cn(r["team1"])
-    c2 = cn(r["team2"])
-    fair_line = bh["line"]
-    cover_p = bh["cover"]
-    not_p = bh["not_cover"]
-    push_p = bh.get("push", 0)
-
-    # Market line from API
-    market_line = None
-    if odds and odds.get("asian") and odds["asian"].get("line") is not None:
-        market_line = odds["asian"]["line"]
-
-    # Recommendation
-    if cover_p > not_p + 0.10:
-        pick = "上盘" if fair_line < 0 else "下盘"
-        team = c1 if fair_line < 0 else c2
-        conf = "强推" if cover_p > 0.60 else "看好"
-        base = f"亚盘 {conf}: {team} {fair_line:+d} 赢盘 ({cover_p*100:.0f}%)"
-    elif not_p > cover_p + 0.10:
-        pick = "下盘" if fair_line < 0 else "上盘"
-        team = c2 if fair_line < 0 else c1
-        conf = "强推" if not_p > 0.60 else "看好"
-        base = f"亚盘 {conf}: {team} 受让赢盘 ({not_p*100:.0f}%)"
-    else:
-        base = f"亚盘 观望: 盘口接近均衡"
-
-    if market_line and market_line != fair_line:
-        base += f" (市场{market_line:+.1f})"
-    return base
+    """竞彩让球推荐."""
+    return _hcap_text(r)
 
 
 def _total_text(total_goals):
@@ -1429,11 +1408,12 @@ def generate_parlay(results, match_date_str):
         # Handicap pick — only if HHAD is open on sporttery
         if sp_hhad:
             hline = sp_hhad["line"]
-            if hline > 0:
-                options.append((f"{c2}+{hline}赢盘", r["best_handicap"]["cover"],
+            # 竞彩: 让球负 = 主队让球后的客队赢盘
+            if hline < 0:
+                options.append((f"让球负({c1}{hline:+d})", r["best_handicap"]["not_cover"] if r["best_handicap"]["not_cover"] > r["best_handicap"]["cover"] else r["best_handicap"]["cover"],
                                "让球", sp_hhad["a"], match_name))
-            elif hline < 0:
-                options.append((f"{c1}{hline}赢盘", r["best_handicap"]["cover"],
+            else:
+                options.append((f"让球胜({c1}{hline:+d})", r["best_handicap"]["cover"],
                                "让球", sp_hhad["h"], match_name))
         # Fallback: if neither open, use ELO-based pick
         if not sp_had and not sp_hhad:
