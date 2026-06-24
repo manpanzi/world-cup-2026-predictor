@@ -223,6 +223,95 @@ def to_beijing_time(time_str):
     return f"{bj_hh:02d}:{bj_mm:02d}", next_day
 
 
+# ---------- standings & motivation ----------
+
+
+def compute_standings():
+    """Compute group standings from match results in worldcup_raw.json."""
+    with open(MATCHES_FILE, encoding="utf-8") as f:
+        data = json.load(f)
+    from collections import defaultdict
+    st = defaultdict(lambda: {"pts": 0, "gf": 0, "ga": 0, "played": 0, "group": ""})
+    for m in data.get("matches", []):
+        t1, t2 = m.get("team1", ""), m.get("team2", "")
+        grp = m.get("group", "")
+        g1, g2 = m.get("goals1", []), m.get("goals2", [])
+        if not g1 and not g2:
+            continue
+        s1 = len(g1) if isinstance(g1, list) else 0
+        s2 = len(g2) if isinstance(g2, list) else 0
+        st[t1]["played"] += 1; st[t1]["gf"] += s1; st[t1]["ga"] += s2; st[t1]["group"] = grp
+        st[t2]["played"] += 1; st[t2]["gf"] += s2; st[t2]["ga"] += s1; st[t2]["group"] = grp
+        if s1 > s2:       st[t1]["pts"] += 3
+        elif s1 < s2:     st[t2]["pts"] += 3
+        else:             st[t1]["pts"] += 1; st[t2]["pts"] += 1
+    for t in st:
+        st[t]["gd"] = st[t]["gf"] - st[t]["ga"]
+    return st
+
+
+def motivation_adj(team_name, standings, is_round3=False):
+    """
+    Return probability adjustment based on qualification status.
+    Positive = team more likely to win; negative = less motivated.
+    Round 3 only: qualified teams may rotate (-0.08 to -0.15).
+    Must-win teams get bonus (+0.05 to +0.12).
+    Eliminated teams get penalty (-0.05 to -0.10).
+    """
+    if not is_round3:
+        return 0.0
+    s = standings.get(team_name, {})
+    pts = s.get("pts", 0)
+    played = s.get("played", 0)
+    if played < 2:
+        return 0.0  # insufficient data
+    # Find group ranking
+    grp = s.get("group", "")
+    group_teams = [(t, v) for t, v in standings.items() if v.get("group") == grp]
+    group_teams.sort(key=lambda x: (-x[1]["pts"], -x[1]["gd"], -x[1]["gf"]))
+    if len(group_teams) < 3:
+        return 0.0
+    rank = [i for i, (t, _) in enumerate(group_teams) if t == team_name]
+    if not rank:
+        return 0.0
+    rank = rank[0]
+    # Determine status
+    third_pts = group_teams[2][1]["pts"]
+    second_pts = group_teams[1][1]["pts"]
+    max_possible = pts + 3  # if they win R3
+    if pts >= 6 or (pts >= 4 and max_possible > third_pts + 3):
+        return -0.10  # already qualified, likely rotation
+    if max_possible < third_pts:
+        return -0.08  # already eliminated
+    if rank >= 2 and max_possible >= second_pts:
+        return 0.08  # must-win to advance
+    if pts == 3 and rank <= 1:
+        return 0.05  # in good position, need result
+    if pts == 1 and max_possible >= third_pts:
+        return 0.10  # desperate must-win
+    return 0.0
+
+
+def upset_alert(team1, team2, w1, d, w2, motivation1, motivation2, gap):
+    """
+    Generate upset/cold-door alert based on multi-factor analysis.
+    Returns warning string or empty.
+    """
+    alerts = []
+    # Qualified team facing must-win team
+    if motivation1 <= -0.08 and motivation2 >= 0.08:
+        alerts.append(f"{cn(team2)}生死战，{cn(team1)}可能轮换")
+    elif motivation2 <= -0.08 and motivation1 >= 0.08:
+        alerts.append(f"{cn(team1)}生死战，{cn(team2)}可能轮换")
+    # Large gap but motivation counters
+    if gap > 200 and (motivation1 >= 0.08 or motivation2 >= 0.08):
+        alerts.append("冷门风险: 战意差距大")
+    # Potential arranged draw (both benefit from a draw)
+    if motivation1 >= 0.05 and motivation2 >= 0.05 and gap < 100:
+        alerts.append("默契平局风险: 双方各取一分皆可出线")
+    return " | ".join(alerts) if alerts else ""
+
+
 # ---------- prediction engine ----------
 
 
@@ -474,7 +563,8 @@ def odds_summary(odds, elo1, elo2):
 # ---------- analysis pipeline ----------
 
 
-def analyze_match(match, elo_data, form_data, fetch_odds=False, sp_odds=None):
+def analyze_match(match, elo_data, form_data, fetch_odds=False, sp_odds=None,
+                  standings=None):
     """Full analysis for a single match, blending market SP odds with ELO."""
     team1 = match["team1"]
     team2 = match["team2"]
@@ -547,6 +637,23 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False, sp_odds=None):
         total = w1 + d + w2
         w1, d, w2 = w1/total, d/total, w2/total
         odds_source = "ELO校准v3"
+
+    # --- Round 3 motivation adjustment ---
+    round_info = match.get("round", "")
+    is_round3 = "Matchday 14" in round_info or "Matchday 3" in round_info
+    mot1 = mot2 = 0.0
+    if is_round3 and standings:
+        mot1 = motivation_adj(team1, standings, is_round3=True)
+        mot2 = motivation_adj(team2, standings, is_round3=True)
+        # Apply to probabilities: shift from unmotivated to motivated team
+        shift = (mot2 - mot1) * 0.5  # half of the motivation difference
+        w1 = max(0.03, w1 - shift)
+        w2 = max(0.03, w2 + shift)
+        total = w1 + d + w2
+        w1, d, w2 = w1/total, d/total, w2/total
+
+    # --- Upset alert ---
+    upset = upset_alert(team1, team2, w1, d, w2, mot1, mot2, gap)
 
     # --- Handicap: use sporttery HHAD if available ---
     if sp_hhad and sp_hhad["line"] != 0:
@@ -637,6 +744,10 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False, sp_odds=None):
         "odds_source": odds_source,
         "sp_had": sp_had,
         "sp_hhad": sp_hhad,
+        "upset": upset,
+        "is_round3": is_round3,
+        "mot1": mot1,
+        "mot2": mot2,
     }
 
 
@@ -804,7 +915,7 @@ def render_prediction_image(results, match_date_str):
                 _asian_analysis(r),
                 _score_text(r["scores"]),
                 _total_text(r["total_goals"]),
-            ]),
+            ] + ([_upset_line(r)] if r.get("upset") else [])),
         ]
 
         # Render
@@ -852,6 +963,11 @@ def _undefeated_line(c1, c2, w1, w2, d):
         return f"不败: {c1}胜平 {((w1+d)*100):.0f}% (方向准确率89%)"
     else:
         return f"不败: {c2}胜平 {((w2+d)*100):.0f}% (方向准确率89%)"
+
+
+def _upset_line(r):
+    upset = r.get("upset", "")
+    return f"⚠ 冷门预警: {upset}" if upset else ""
 
 
 def _asian_analysis(r):
@@ -1556,7 +1672,14 @@ def main():
 
     print(f"\n[赛程] {target_str} 共 {len(target_matches)} 场比赛 (21:00→21:00窗口)")
 
-    fetch_odds = not args.no_odds or True  # always fetch for display
+    # Compute standings for motivation adjustment
+    standings = compute_standings()
+    r3_count = sum(1 for m in target_matches
+                   if "Matchday 14" in m.get("round", "") or "Matchday 3" in m.get("round", ""))
+    if r3_count > 0:
+        print(f"[情报] 第3轮 {r3_count}场，已加载积分/出线形势分析")
+
+    fetch_odds = not args.no_odds or True
     results = []
     for m in target_matches:
         t1, t2 = m["team1"], m["team2"]
@@ -1564,7 +1687,7 @@ def main():
         bj_time, nd = to_beijing_time(m.get("time", ""))
         print(f"\n[分析] {c1} vs {c2} ({bj_time} 北京)")
         result = analyze_match(m, elo_data, form_data, fetch_odds=fetch_odds,
-                               sp_odds=sp_odds)
+                               sp_odds=sp_odds, standings=standings)
         results.append(result)
         if result.get("skip"):
             print(f"  ⏭ {result['reason']}")
