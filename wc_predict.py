@@ -15,6 +15,14 @@ import sys
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 
+# Load .env file (local dev convenience)
+try:
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    load_dotenv(_env_path)
+except Exception:
+    pass
+
 import requests
 from matplotlib import font_manager
 import matplotlib
