@@ -250,46 +250,70 @@ def compute_standings():
     return st
 
 
-def motivation_adj(team_name, standings, is_round3=False):
+def motivation_adj(team_name, standings, opponent_name, is_round3=False):
     """
-    Return probability adjustment based on qualification status.
-    Positive = team more likely to win; negative = less motivated.
-    Round 3 only: qualified teams may rotate (-0.08 to -0.15).
-    Must-win teams get bonus (+0.05 to +0.12).
-    Eliminated teams get penalty (-0.05 to -0.10).
+    Return (motivation_adj, draw_boost_for_pair).
+    Round 3 only.
     """
     if not is_round3:
-        return 0.0
+        return 0.0, 0.0
     s = standings.get(team_name, {})
+    o = standings.get(opponent_name, {})
     pts = s.get("pts", 0)
+    opp_pts = o.get("pts", 0)
     played = s.get("played", 0)
     if played < 2:
-        return 0.0  # insufficient data
-    # Find group ranking
+        return 0.0, 0.0
+
     grp = s.get("group", "")
-    group_teams = [(t, v) for t, v in standings.items() if v.get("group") == grp]
-    group_teams.sort(key=lambda x: (-x[1]["pts"], -x[1]["gd"], -x[1]["gf"]))
+    group_teams = sorted(
+        [(t, v) for t, v in standings.items() if v.get("group") == grp],
+        key=lambda x: (-x[1]["pts"], -x[1]["gd"], -x[1]["gf"])
+    )
     if len(group_teams) < 3:
-        return 0.0
-    rank = [i for i, (t, _) in enumerate(group_teams) if t == team_name]
-    if not rank:
-        return 0.0
-    rank = rank[0]
-    # Determine status
+        return 0.0, 0.0
+
+    rank = next((i for i, (t, _) in enumerate(group_teams) if t == team_name), -1)
+    opp_rank = next((i for i, (t, _) in enumerate(group_teams) if t == opponent_name), -1)
+    if rank < 0 or opp_rank < 0:
+        return 0.0, 0.0
+
     third_pts = group_teams[2][1]["pts"]
     second_pts = group_teams[1][1]["pts"]
-    max_possible = pts + 3  # if they win R3
-    if pts >= 6 or (pts >= 4 and max_possible > third_pts + 3):
-        return -0.10  # already qualified, likely rotation
-    if max_possible < third_pts:
-        return -0.08  # already eliminated
-    if rank >= 2 and max_possible >= second_pts:
-        return 0.08  # must-win to advance
-    if pts == 3 and rank <= 1:
-        return 0.05  # in good position, need result
-    if pts == 1 and max_possible >= third_pts:
-        return 0.10  # desperate must-win
-    return 0.0
+    first_pts = group_teams[0][1]["pts"]
+    max_possible = pts + 3
+    draw_pts = pts + 1
+    opp_draw_pts = opp_pts + 1
+
+    # --- Both teams qualify with a draw ---
+    # A draw puts both above the 3rd place team's max possible
+    both_draw_qualify = (
+        draw_pts > third_pts + 3 and opp_draw_pts > third_pts + 3
+    ) or (
+        draw_pts >= second_pts and opp_draw_pts >= second_pts
+        and (draw_pts >= third_pts + 3)
+    )
+    if both_draw_qualify:
+        return -0.08, 0.65  # huge draw boost for both
+
+    # --- Individual motivation ---
+    mot = 0.0
+    # Already qualified → heavy rotation risk
+    if pts >= 6 or (pts >= 4 and rank <= 1 and max_possible > group_teams[2][1]["pts"] + 3):
+        mot = -0.15
+    # Eliminated
+    elif max_possible < third_pts and rank >= 2:
+        mot = -0.05
+    # Must-win
+    elif max_possible >= second_pts and rank >= 2:
+        mot = 0.10
+    # In good position
+    elif pts >= 3 and rank <= 1:
+        mot = 0.03
+    # Desperate
+    elif pts <= 1 and max_possible >= third_pts:
+        mot = 0.08
+    return mot, 0.0
 
 
 def upset_alert(team1, team2, w1, d, w2, motivation1, motivation2, gap):
@@ -641,16 +665,22 @@ def analyze_match(match, elo_data, form_data, fetch_odds=False, sp_odds=None,
     # --- Round 3 motivation adjustment ---
     round_info = match.get("round", "")
     is_round3 = "Matchday 14" in round_info or "Matchday 3" in round_info
-    mot1 = mot2 = 0.0
+    mot1 = mot2 = draw_boost = 0.0
     if is_round3 and standings:
-        mot1 = motivation_adj(team1, standings, is_round3=True)
-        mot2 = motivation_adj(team2, standings, is_round3=True)
-        # Apply to probabilities: shift from unmotivated to motivated team
-        shift = (mot2 - mot1) * 0.5  # half of the motivation difference
-        w1 = max(0.03, w1 - shift)
-        w2 = max(0.03, w2 + shift)
-        total = w1 + d + w2
-        w1, d, w2 = w1/total, d/total, w2/total
+        mot1, db1 = motivation_adj(team1, standings, team2, is_round3=True)
+        mot2, db2 = motivation_adj(team2, standings, team1, is_round3=True)
+        draw_boost = max(db1, db2)
+        if draw_boost > 0.5:
+            # Both qualify with draw → override to heavy draw
+            d = draw_boost
+            w1 = (1 - d) * max(w1, 0.01) / max(w1 + w2, 0.01)
+            w2 = 1 - d - w1
+        else:
+            shift = (mot2 - mot1) * 0.5
+            w1 = max(0.03, w1 - shift)
+            w2 = max(0.03, w2 + shift)
+            total = w1 + d + w2
+            w1, d, w2 = w1/total, d/total, w2/total
 
     # --- Upset alert ---
     upset = upset_alert(team1, team2, w1, d, w2, mot1, mot2, gap)
@@ -1389,8 +1419,9 @@ def generate_parlay(results, match_date_str):
     if len(analyzed) > 4:
         analyzed = analyzed[:4]  # max 4
 
-    # Build all picks per match — only include bet types that sporttery.cn has opened
+    # Build all picks per match — skip mutual-draw and dead-rubber matches
     all_picks = []
+    skipped_matches = []
     for r in analyzed:
         c1, c2 = cn(r["team1"]), cn(r["team2"])
         w1, w2 = r["win1"], r["win2"]
@@ -1398,30 +1429,54 @@ def generate_parlay(results, match_date_str):
         sp_had = r.get("sp_had")
         sp_hhad = r.get("sp_hhad")
         match_name = f"{c1}vs{c2}"
+        upset = r.get("upset", "")
+        mot1 = r.get("mot1", 0)
+        mot2 = r.get("mot2", 0)
+
+        # Skip if both benefit from draw (mutual qualification)
+        if "默契平球" in upset or "双双晋级" in upset:
+            skipped_matches.append((match_name, "默契平局,不推荐"))
+            continue
+        # Skip if both teams have zero motivation (dead rubber)
+        if mot1 <= -0.10 and mot2 <= -0.10:
+            skipped_matches.append((match_name, "双方均已出线,轮换风险高"))
+            continue
+
         options = []
-        # Win/Loss pick — only if HAD is open on sporttery
+        # Win/Loss pick — only if HAD is open
         if sp_had:
-            if w1 >= w2:
+            # Only pick if motivation gap is clear
+            if w1 >= w2 and mot1 >= mot2:
                 options.append((f"{c1}胜", w1, "胜负", sp_had["h"], match_name))
-            else:
+            elif w2 > w1 and mot2 >= mot1:
                 options.append((f"{c2}胜", w2, "胜负", sp_had["a"], match_name))
-        # Handicap pick — only if HHAD is open on sporttery
+        # Handicap pick — only if HHAD is open
         if sp_hhad:
             hline = sp_hhad["line"]
-            # 竞彩: 让球负 = 主队让球后的客队赢盘
             if hline < 0:
-                options.append((f"让球负({c1}{hline:+d})", r["best_handicap"]["not_cover"] if r["best_handicap"]["not_cover"] > r["best_handicap"]["cover"] else r["best_handicap"]["cover"],
-                               "让球", sp_hhad["a"], match_name))
+                # 让球负 means away covers
+                label = f"让球负({c1}{hline:+d})"
+                prob = r["best_handicap"]["not_cover"]
+                odds = sp_hhad["a"]
+                if prob > 0.45:  # only include if reasonable chance
+                    options.append((label, prob, "让球", odds, match_name))
             else:
-                options.append((f"让球胜({c1}{hline:+d})", r["best_handicap"]["cover"],
-                               "让球", sp_hhad["h"], match_name))
-        # Fallback: if neither open, use ELO-based pick
+                label = f"让球胜({c1}{hline:+d})"
+                prob = r["best_handicap"]["cover"]
+                odds = sp_hhad["h"]
+                if prob > 0.45:
+                    options.append((label, prob, "让球", odds, match_name))
+        # Fallback
         if not sp_had and not sp_hhad:
             if w1 >= w2:
                 options.append((f"{c1}胜", w1, "ELO", lotto["home"], match_name))
             else:
                 options.append((f"{c2}胜", w2, "ELO", lotto["away"], match_name))
-        all_picks.append(options)
+        if options:
+            all_picks.append(options)
+
+    if skipped_matches:
+        print(f"[串关] 跳过 {len(skipped_matches)} 场: {', '.join(s[0] for s in skipped_matches)}")
 
     # Enumerate all subsets (size 2, 3, 4) × pick combinations × M串N methods
     from itertools import combinations as icombo
